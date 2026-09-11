@@ -138,7 +138,7 @@ class TestGeminiGenerationAndParsing:
         assert resp.summary == "Focus on the recursive base case."
         assert len(resp.overlay_actions) == 1
         action = resp.overlay_actions[0]
-        assert action.action_type == OverlayActionType.FOCUS_BOX
+        assert action.action_type == OverlayActionType.HIGHLIGHT
         assert action.target_normalized == (0.1, 0.2, 0.3, 0.4)
         assert action.label == "Base Case"
         assert resp.follow_up == "What happens when n=0 is passed?"
@@ -184,9 +184,14 @@ class TestGeminiGenerationAndParsing:
                 },
                 {
                     "action_type": "arrow",  # lowercase
-                    "target_normalized": None,
-                    "label": None,
+                    "target_normalized": [0.1, 0.2, 0.5, 0.6],
+                    "label": "To Result",
                     "color": None,
+                },
+                {
+                    "action_type": "HIGHLIGHT",
+                    "target_normalized": None,  # Invalid: HIGHLIGHT missing target_normalized -> dropped
+                    "label": "Missing Coords",
                 },
             ],
             "follow_up": None,
@@ -200,17 +205,18 @@ class TestGeminiGenerationAndParsing:
         req = TutorRequest(question=UserQuestion(transcript="Test", audio_duration=1.0))
         resp = adapter.generate_response(req)
 
+        # Invalid 3rd action was safely dropped
         assert len(resp.overlay_actions) == 2
         # Action 1: Unknown type becomes NONE, coords clamped
         a1 = resp.overlay_actions[0]
         assert a1.action_type == OverlayActionType.NONE
-        assert a1.target_normalized == (0.0, 0.2, 1.0, 0.8)
+        assert a1.target_normalized == (0.0, 0.2, 1.0, 1.0)
         assert a1.label == "Clamped Box"
 
-        # Action 2: Lowercase 'arrow' becomes ARROW
+        # Action 2: Lowercase 'arrow' becomes ARROW with valid coordinates
         a2 = resp.overlay_actions[1]
         assert a2.action_type == OverlayActionType.ARROW
-        assert a2.target_normalized is None
+        assert a2.target_normalized == (0.1, 0.2, 0.5, 0.6)
 
     def test_fallback_to_parsed_attribute(self):
         mock_client = MagicMock()

@@ -212,16 +212,27 @@ class GeminiTutorAdapter(TutorAdapter):
                     target_normalized = clamped
 
             label = action_data.get("label")
+            text = action_data.get("text")
+            title = action_data.get("title")
             color = action_data.get("color")
 
-            parsed_actions.append(
-                OverlayAction(
-                    action_type=action_type,
-                    target_normalized=target_normalized,
-                    label=str(label) if label else None,
-                    color=str(color) if color else None,
+            # Fallback for text/label
+            if action_type in (OverlayActionType.TEXT, OverlayActionType.EQUATION) and not text and label:
+                text = label
+
+            try:
+                parsed_actions.append(
+                    OverlayAction(
+                        action_type=action_type,
+                        target_normalized=target_normalized,
+                        label=str(label) if label else None,
+                        text=str(text) if text else None,
+                        title=str(title) if title else None,
+                        color=str(color) if color else None,
+                    )
                 )
-            )
+            except Exception as exc:
+                logger.warning("Dropping invalid overlay action from LLM response: %s", exc)
 
         return TutorResponse(
             intent=intent,

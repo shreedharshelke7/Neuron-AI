@@ -10,15 +10,23 @@ class OverlayActionSchema(BaseModel):
     """Schema for structured visual guidance actions."""
 
     action_type: str = Field(
-        description="Type of overlay action: FOCUS_BOX, ARROW, PIN, UNDERLINE, or NONE"
+        description="Type of overlay action: HIGHLIGHT, ARROW, TEXT, CARD, EQUATION, or NONE"
     )
     target_normalized: Optional[List[float]] = Field(
         default=None,
-        description="Normalized coordinates [nx, ny, nw, nh] bounded strictly within 0.0 to 1.0",
+        description="Normalized coordinates bounded strictly within 0.0 to 1.0. For HIGHLIGHT/CARD: [nx, ny, nw, nh]. For ARROW: [x1, y1, x2, y2]. For TEXT/EQUATION: [nx, ny, nw, nh] position.",
     )
     label: Optional[str] = Field(
         default=None,
-        description="Concise annotation or label explaining the focused visual element",
+        description="Concise annotation or label (e.g. for HIGHLIGHT or ARROW)",
+    )
+    text: Optional[str] = Field(
+        default=None,
+        description="Educational note (TEXT), formula/LaTeX expression (EQUATION), or body text (CARD)",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Title for callout card (CARD)",
     )
     color: Optional[str] = Field(
         default=None,

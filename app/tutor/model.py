@@ -13,13 +13,28 @@ from app.stt.model import UserQuestion
 
 
 class OverlayActionType(str, Enum):
-    """Supported overlay action primitive types for visual guidance (DATA ONLY)."""
+    """Supported overlay action primitive types for visual guidance (DATA ONLY).
 
-    FOCUS_BOX = "FOCUS_BOX"
+    SRS Core AI Contract:
+    - HIGHLIGHT: Focus bounding box [nx, ny, nw, nh]
+    - ARROW: Directed pointer [x1, y1, x2, y2]
+    - TEXT: Educational annotation/note at [nx, ny, nw, nh]
+    - CARD: Structured callout with title and text
+    - EQUATION: Formatted LaTeX or math expression
+    - NONE: No visual guidance action
+    """
+
+    HIGHLIGHT = "HIGHLIGHT"
     ARROW = "ARROW"
+    TEXT = "TEXT"
+    CARD = "CARD"
+    EQUATION = "EQUATION"
+    NONE = "NONE"
+
+    # Compatibility aliases
+    FOCUS_BOX = "FOCUS_BOX"
     PIN = "PIN"
     UNDERLINE = "UNDERLINE"
-    NONE = "NONE"
 
     @classmethod
     def from_string(cls, value: Optional[str]) -> "OverlayActionType":
@@ -27,6 +42,13 @@ class OverlayActionType(str, Enum):
         if not value:
             return cls.NONE
         normalized = value.strip().upper()
+        if normalized == "FOCUS_BOX":
+            return cls.HIGHLIGHT
+        if normalized == "PIN":
+            return cls.TEXT
+        if normalized == "UNDERLINE":
+            return cls.HIGHLIGHT
+
         for member in cls:
             if member.value == normalized:
                 return member
@@ -44,16 +66,56 @@ class OverlayAction:
     action_type: OverlayActionType
     target_normalized: Optional[Tuple[float, float, float, float]] = None
     label: Optional[str] = None
+    text: Optional[str] = None
+    title: Optional[str] = None
     color: Optional[str] = None
 
     def __post_init__(self) -> None:
-        """Validate coordinates upon instantiation."""
+        """Validate action type, coordinates, and payload upon instantiation."""
+        # Validate action_type
+        if not isinstance(self.action_type, OverlayActionType):
+            raise ValueError(f"Unsupported action type: {self.action_type}")
+
+        # Validate coordinates if present
         if self.target_normalized is not None:
             if len(self.target_normalized) != 4:
-                raise ValueError("target_normalized must contain exactly 4 values (nx, ny, nw, nh).")
+                raise ValueError("target_normalized must contain exactly 4 values.")
             for val in self.target_normalized:
                 if not isinstance(val, (int, float)) or not math.isfinite(val):
                     raise ValueError(f"Coordinate {val} is not a finite number.")
+                if val < 0.0 or val > 1.0001:
+                    raise ValueError(f"Coordinate {val} is out of normalized [0.0, 1.0] range.")
+
+        # Coordinate presence requirements
+        canonical_type = (
+            OverlayActionType.HIGHLIGHT
+            if self.action_type in (OverlayActionType.HIGHLIGHT, OverlayActionType.FOCUS_BOX, OverlayActionType.UNDERLINE)
+            else self.action_type
+        )
+
+        if canonical_type in (OverlayActionType.HIGHLIGHT, OverlayActionType.ARROW):
+            if self.target_normalized is None:
+                raise ValueError(f"{canonical_type.value} requires target_normalized coordinates.")
+
+        # Payload requirements
+        if canonical_type == OverlayActionType.TEXT:
+            if not self.text and not self.label:
+                raise ValueError("TEXT action requires text or label content.")
+
+        if canonical_type == OverlayActionType.CARD:
+            if not self.title and not self.text:
+                raise ValueError("CARD action requires title or text content.")
+
+        if canonical_type == OverlayActionType.EQUATION:
+            if not self.text and not self.label:
+                raise ValueError("EQUATION action requires formula expression in text.")
+
+        # Check for arbitrary executable / script injection
+        for s in (self.label, self.text, self.title, self.color):
+            if s is not None:
+                lower = str(s).lower()
+                if "<script" in lower or "javascript:" in lower or "<iframe" in lower:
+                    raise ValueError(f"Payload contains disallowed executable content: {s}")
 
     @staticmethod
     def clamp_coordinates(
@@ -61,20 +123,19 @@ class OverlayAction:
     ) -> Optional[Tuple[float, float, float, float]]:
         """Validate and clamp coordinates to normalized [0.0, 1.0] bounds.
 
-        Returns None if coordinates contain NaN or Inf.
+        Returns None if coordinates contain NaN or Inf or invalid length.
         """
-        if len(coords) != 4:
+        if coords is None or len(coords) != 4:
             return None
         for val in coords:
             if not isinstance(val, (int, float)) or not math.isfinite(val):
                 return None
 
-        nx, ny, nw, nh = coords
-        nx = max(0.0, min(1.0, float(nx)))
-        ny = max(0.0, min(1.0, float(ny)))
-        nw = max(0.0, min(1.0 - nx, float(nw)))
-        nh = max(0.0, min(1.0 - ny, float(nh)))
-        return (round(nx, 4), round(ny, 4), round(nw, 4), round(nh, 4))
+        c0 = max(0.0, min(1.0, float(coords[0])))
+        c1 = max(0.0, min(1.0, float(coords[1])))
+        c2 = max(0.0, min(1.0, float(coords[2])))
+        c3 = max(0.0, min(1.0, float(coords[3])))
+        return (round(c0, 4), round(c1, 4), round(c2, 4), round(c3, 4))
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize overlay action to a dictionary."""
@@ -82,6 +143,8 @@ class OverlayAction:
             "action_type": self.action_type.value,
             "target_normalized": list(self.target_normalized) if self.target_normalized else None,
             "label": self.label,
+            "text": self.text,
+            "title": self.title,
             "color": self.color,
         }
 
