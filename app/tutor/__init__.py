@@ -18,11 +18,30 @@ from app.tutor.model import (
     TutorResponse,
 )
 
+from app.tutor.fallback import (
+    DemoMode,
+    FallbackTutorAdapter,
+    resolve_demo_mode,
+)
+from app.tutor.scenario import (
+    DemoScenario,
+    DemoScenarioId,
+    DemoScenarioMatcher,
+    DemoScenarioRegistry,
+)
+
 __all__ = [
     "TutorEngine",
     "TutorAdapter",
     "GeminiTutorAdapter",
     "FakeTutorAdapter",
+    "FallbackTutorAdapter",
+    "DemoMode",
+    "resolve_demo_mode",
+    "DemoScenario",
+    "DemoScenarioId",
+    "DemoScenarioMatcher",
+    "DemoScenarioRegistry",
     "TutorRequest",
     "TutorResponse",
     "OverlayAction",

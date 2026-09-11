@@ -306,7 +306,7 @@ def run_desktop_shell(
     engine = (
         tutor_engine
         if tutor_engine is not None
-        else TutorEngine(adapter=GeminiTutorAdapter())
+        else TutorEngine()
     )
     app = NeuronDesktopApp(
         audio_service=service,
