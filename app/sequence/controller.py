@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
+from app.diagnostics.metrics import DiagnosticEvent, DiagnosticStage, MetricsCollector, get_metrics_collector
 from typing import Callable, List, Optional
 
 from app.capture.model import DisplayGeometry, SelectedRegion
@@ -51,6 +53,7 @@ class SequenceController:
         on_started: Optional[Callable[[int], None]] = None,
         on_finished: Optional[Callable[[int], None]] = None,
         on_error: Optional[Callable[[str, int], None]] = None,
+        metrics_collector: Optional[MetricsCollector] = None,
     ) -> None:
         self.tts_adapter: Optional[TTSAdapter] = tts_adapter
         self.playback_service: Optional[AudioPlaybackService] = playback_service
@@ -59,6 +62,9 @@ class SequenceController:
         self.on_started: Optional[Callable[[int], None]] = on_started
         self.on_finished: Optional[Callable[[int], None]] = on_finished
         self.on_error: Optional[Callable[[str, int], None]] = on_error
+        self.metrics_collector: MetricsCollector = (
+            metrics_collector if metrics_collector is not None else get_metrics_collector()
+        )
 
         self._active_token: int = 0
         self._cancelled: bool = False
@@ -182,9 +188,30 @@ class SequenceController:
 
             # Synthesize segment audio
             clip: Optional[TTSAudioClip] = None
+            t_tts_start = time.perf_counter()
             try:
                 clip = self.tts_adapter.synthesize(segment_text)
+                tts_dur = (time.perf_counter() - t_tts_start) * 1000.0
+                if self.metrics_collector is not None:
+                    self.metrics_collector.record_event(
+                        DiagnosticEvent(
+                            stage=DiagnosticStage.TTS,
+                            duration_ms=tts_dur,
+                            success=True,
+                            metadata={"segment_index": seg_idx, "chars": len(segment_text)},
+                        )
+                    )
             except Exception as ex:
+                tts_dur = (time.perf_counter() - t_tts_start) * 1000.0
+                if self.metrics_collector is not None:
+                    self.metrics_collector.record_event(
+                        DiagnosticEvent(
+                            stage=DiagnosticStage.TTS,
+                            duration_ms=tts_dur,
+                            success=False,
+                            error_code=type(ex).__name__,
+                        )
+                    )
                 logger.error("TTS synthesis error on segment %d ('%s'): %s", seg_idx, segment_text[:30], ex)
                 with self._lock:
                     self._cancelled = True

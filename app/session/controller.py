@@ -10,7 +10,14 @@ from app.audio.errors import AudioError
 from app.audio.model import AudioCaptureResult
 from app.audio.service import AudioCaptureService
 from app.audio.vad import EndOfSpeechConfig, EndOfSpeechDetector
+import time
 from app.capture.indicator import CaptureIndicator, StubCaptureIndicator
+from app.diagnostics.metrics import (
+    DiagnosticEvent,
+    DiagnosticStage,
+    MetricsCollector,
+    get_metrics_collector,
+)
 from app.capture.model import CapturedScreen, SelectedRegion
 from app.capture.service import CaptureService, StubCaptureService
 from app.overlay.host import OverlayHost, StubOverlayHost
@@ -55,6 +62,7 @@ class SessionController:
         auto_capture: bool = False,
         desktop_window: Optional[Any] = None,
         capture_delay_ms: int = 80,
+        metrics_collector: Optional[MetricsCollector] = None,
     ) -> None:
         self._state: SessionState = SessionState.IDLE
         self._auto_capture: bool = auto_capture
@@ -76,6 +84,11 @@ class SessionController:
         self._window_was_visible: bool = False
         self._window_was_maximized: bool = False
         self._capture_pending: bool = False
+        self.metrics_collector: MetricsCollector = (
+            metrics_collector if metrics_collector is not None else get_metrics_collector()
+        )
+        self._session_start_time: Optional[float] = None
+        self._listening_start_time: Optional[float] = None
 
         self.audio_service: Optional[AudioCaptureService] = audio_service
         self.stt_adapter: Optional[STTAdapter] = stt_adapter
@@ -326,6 +339,7 @@ class SessionController:
             return
 
         try:
+            self._listening_start_time = time.perf_counter()
             self.audio_service.start_recording()
             self._set_state(SessionState.LISTENING)
             if self.eos_detector is not None:
@@ -366,6 +380,17 @@ class SessionController:
             self.dismiss()
             return None
 
+        if self._listening_start_time is not None:
+            listen_dur = (time.perf_counter() - self._listening_start_time) * 1000.0
+            self._listening_start_time = None
+            self.metrics_collector.record_event(
+                DiagnosticEvent(
+                    stage=DiagnosticStage.LISTENING,
+                    duration_ms=listen_dur,
+                    success=True,
+                    metadata={"has_audio": result is not None},
+                )
+            )
         self._current_audio = result
 
         if self.stt_adapter is None:
@@ -386,9 +411,19 @@ class SessionController:
         adapter = self.stt_adapter
 
         def _worker() -> None:
+            t_stt_start = time.perf_counter()
             try:
                 assert adapter is not None
                 transcript_res = adapter.transcribe(audio)
+                stt_dur = (time.perf_counter() - t_stt_start) * 1000.0
+                self.metrics_collector.record_event(
+                    DiagnosticEvent(
+                        stage=DiagnosticStage.STT,
+                        duration_ms=stt_dur,
+                        success=True,
+                        metadata={"is_empty": transcript_res.is_empty},
+                    )
+                )
                 if bridge is not None and hasattr(bridge, "emit_result"):
                     bridge.emit_result(transcript_res, token)
                 elif bridge is not None and hasattr(bridge, "result_ready"):
@@ -396,6 +431,15 @@ class SessionController:
                 else:
                     self.handle_transcription_success(transcript_res, token)
             except Exception as exc:
+                stt_dur = (time.perf_counter() - t_stt_start) * 1000.0
+                self.metrics_collector.record_event(
+                    DiagnosticEvent(
+                        stage=DiagnosticStage.STT,
+                        duration_ms=stt_dur,
+                        success=False,
+                        error_code=type(exc).__name__,
+                    )
+                )
                 err_msg = str(exc)
                 if bridge is not None and hasattr(bridge, "emit_error"):
                     bridge.emit_error(err_msg, token)
@@ -472,9 +516,22 @@ class SessionController:
         engine = self.tutor_engine
 
         def _worker() -> None:
+            t_tutor_start = time.perf_counter()
             try:
                 assert engine is not None
                 tutor_res = engine.process_request(request)
+                tutor_dur = (time.perf_counter() - t_tutor_start) * 1000.0
+                self.metrics_collector.record_event(
+                    DiagnosticEvent(
+                        stage=DiagnosticStage.THINKING,
+                        duration_ms=tutor_dur,
+                        success=True,
+                        metadata={
+                            "primitives_count": len(tutor_res.overlay_actions) if hasattr(tutor_res, "overlay_actions") else 0,
+                            "has_narration": bool(tutor_res.narration) if hasattr(tutor_res, "narration") else False,
+                        },
+                    )
+                )
                 if bridge is not None and hasattr(bridge, "emit_result"):
                     bridge.emit_result(tutor_res, token)
                 elif bridge is not None and hasattr(bridge, "result_ready"):
@@ -482,6 +539,15 @@ class SessionController:
                 else:
                     self.handle_tutor_success(tutor_res, token)
             except Exception as exc:
+                tutor_dur = (time.perf_counter() - t_tutor_start) * 1000.0
+                self.metrics_collector.record_event(
+                    DiagnosticEvent(
+                        stage=DiagnosticStage.THINKING,
+                        duration_ms=tutor_dur,
+                        success=False,
+                        error_code=type(exc).__name__,
+                    )
+                )
                 err_msg = str(exc)
                 if bridge is not None and hasattr(bridge, "emit_error"):
                     bridge.emit_error(err_msg, token)
@@ -515,6 +581,7 @@ class SessionController:
         self._set_state(SessionState.RESPONDED)
 
         # Render visual explanation on overlay surface
+        t_over_start = time.perf_counter()
         try:
             geom = self._current_capture.geometry if self._current_capture else None
             self.overlay_host.render_tutor_response(
@@ -522,7 +589,24 @@ class SessionController:
                 geometry=geom,
                 selected_region=self._selected_region,
             )
+            over_dur = (time.perf_counter() - t_over_start) * 1000.0
+            self.metrics_collector.record_event(
+                DiagnosticEvent(
+                    stage=DiagnosticStage.OVERLAY,
+                    duration_ms=over_dur,
+                    success=True,
+                )
+            )
         except Exception as ex:
+            over_dur = (time.perf_counter() - t_over_start) * 1000.0
+            self.metrics_collector.record_event(
+                DiagnosticEvent(
+                    stage=DiagnosticStage.OVERLAY,
+                    duration_ms=over_dur,
+                    success=False,
+                    error_code=type(ex).__name__,
+                )
+            )
             logger.exception("Error rendering tutor response on overlay: %s", ex)
 
         # Start narration sequencing if configured
@@ -618,8 +702,19 @@ class SessionController:
                 self.tts_adapter.reset_terminal_error()
             except Exception:
                 pass
+        self._session_start_time = time.perf_counter()
+        t_act_start = time.perf_counter()
         self._session_token += 1
         self._set_state(SessionState.ACTIVATED)
+        act_dur = (time.perf_counter() - t_act_start) * 1000.0
+        self.metrics_collector.record_event(
+            DiagnosticEvent(
+                stage=DiagnosticStage.ACTIVATION,
+                duration_ms=act_dur,
+                success=True,
+                metadata={"session_token": self._session_token},
+            )
+        )
 
         if self._auto_capture:
             self.begin_capture_flow()
@@ -703,13 +798,32 @@ class SessionController:
             return
 
         captured = None
+        t_cap_start = time.perf_counter()
         try:
             self.capture_indicator.show()
             try:
                 captured = self.capture_service.capture_current_screen()
             finally:
                 self.capture_indicator.hide()
+            cap_dur = (time.perf_counter() - t_cap_start) * 1000.0
+            self.metrics_collector.record_event(
+                DiagnosticEvent(
+                    stage=DiagnosticStage.CAPTURE,
+                    duration_ms=cap_dur,
+                    success=captured is not None and captured.geometry is not None,
+                    metadata={"has_geometry": bool(captured and captured.geometry)},
+                )
+            )
         except Exception as e:
+            cap_dur = (time.perf_counter() - t_cap_start) * 1000.0
+            self.metrics_collector.record_event(
+                DiagnosticEvent(
+                    stage=DiagnosticStage.CAPTURE,
+                    duration_ms=cap_dur,
+                    success=False,
+                    error_code=type(e).__name__,
+                )
+            )
             logger.exception("Screen capture failed: %s", e)
             self._set_state(SessionState.ERROR)
             self.reset_to_idle()
@@ -790,6 +904,17 @@ class SessionController:
                 except Exception as ex:
                     logger.warning("Error clearing overlay host during dismiss: %s", ex)
             self.capture_indicator.hide()
+            if self._session_start_time is not None:
+                total_dur = (time.perf_counter() - self._session_start_time) * 1000.0
+                self._session_start_time = None
+                self.metrics_collector.record_event(
+                    DiagnosticEvent(
+                        stage=DiagnosticStage.SESSION,
+                        duration_ms=total_dur,
+                        success=True,
+                        metadata={"dismissed": True},
+                    )
+                )
             self._current_capture = None
             self._selected_region = None
             self._set_state(SessionState.IDLE)

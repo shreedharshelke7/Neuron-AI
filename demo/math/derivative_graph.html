@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neuron AI Demo — Calculus & Derivatives</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            max-width: 800px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        h1 {
+            color: #58a6ff;
+            margin-top: 0;
+            font-size: 28px;
+        }
+        .badge {
+            display: inline-block;
+            background: #238636;
+            color: #ffffff;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+        .formula-box {
+            background: #21262d;
+            border-left: 4px solid #58a6ff;
+            padding: 16px 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 20px;
+            color: #79c0ff;
+        }
+        .graph-canvas {
+            display: block;
+            margin: 24px auto;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+        }
+        .instructions {
+            background: #1f242c;
+            border: 1px solid #388bfd33;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 24px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .instructions code {
+            background: #282e38;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #f0883e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="badge">SCENARIO 1: MATH & CALCULUS</span>
+        <h1>Derivative of a Quadratic Function</h1>
+        <p>Consider the function describing a parabola:</p>
+        
+        <div class="formula-box" id="equation">
+            f(x) = x²<br>
+            f'(x) = 2x
+        </div>
+
+        <svg class="graph-canvas" width="600" height="300" viewBox="-300 -200 600 300">
+            <!-- Grid and Axes -->
+            <line x1="-280" y1="0" x2="280" y2="0" stroke="#30363d" stroke-width="2" />
+            <line x1="0" y1="-180" x2="0" y2="80" stroke="#30363d" stroke-width="2" />
+            
+            <!-- Axis labels -->
+            <text x="260" y="-10" fill="#8b949e" font-size="12">x</text>
+            <text x="10" y="-170" fill="#8b949e" font-size="12">y = f(x)</text>
+
+            <!-- Parabola: y = x^2 (inverted for SVG y-axis) -->
+            <!-- Scale: x in [-15..15], mapped to pixels -->
+            <path d="M -150 -225 Q 0 0 150 -225" fill="none" stroke="#58a6ff" stroke-width="3" />
+            
+            <!-- Minimum point at (0, 0) -->
+            <circle cx="0" cy="0" r="6" fill="#f85149" />
+            <text x="12" y="15" fill="#f85149" font-size="13" font-weight="bold">Min: (0, 0) where f'(x) = 0</text>
+            
+            <!-- Tangent line at (0,0) -->
+            <line x1="-80" y1="0" x2="80" y2="0" stroke="#7ee787" stroke-width="2" stroke-dasharray="4 4" />
+        </svg>
+
+        <div class="instructions">
+            <strong>🎤 How to test with Neuron:</strong><br>
+            1. Keep this page visible on your screen.<br>
+            2. Say <code>"Hey Neuron"</code> or press <code>Ctrl+Shift+Space</code>.<br>
+            3. Ask: <em>"What is the derivative of x squared and where is the minimum?"</em><br>
+            4. Neuron will highlight the formula and minimum point while speaking the derivation.
+        </div>
+    </div>
+</body>
+</html>
