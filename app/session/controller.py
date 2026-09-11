@@ -515,6 +515,11 @@ class SessionController:
         self._current_audio = None
         self._current_transcript = None
         self._current_tutor_response = None
+        if self.tts_adapter is not None and hasattr(self.tts_adapter, "reset_terminal_error"):
+            try:
+                self.tts_adapter.reset_terminal_error()
+            except Exception:
+                pass
         self._session_token += 1
         self._set_state(SessionState.ACTIVATED)
 

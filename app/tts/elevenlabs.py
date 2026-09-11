@@ -16,18 +16,40 @@ import requests
 from app.tts.adapter import TTSAdapter
 from app.tts.errors import (
     TTSAuthenticationError,
-    TTSNetworkError,
-    TTSQuotaExceededError,
+    TTSConfigurationError,
     TTSError,
+    TTSNetworkError,
+    TTSPaidPlanRequiredError,
+    TTSQuotaExceededError,
     TTSTimeoutError,
+    is_terminal_tts_error,
 )
 from app.tts.model import TTSAudioClip
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel (clear, pedagogical)
 DEFAULT_MODEL_ID = "eleven_turbo_v2_5"      # High quality, low latency, free-tier compatible
 DEFAULT_OUTPUT_FORMAT = "pcm_24000"        # 24kHz 16-bit mono raw PCM
+
+
+def _read_env_file_var(var_name: str) -> Optional[str]:
+    """Safely search workspace .env file for a variable without side-effects."""
+    env_path = os.path.join(os.getcwd(), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("#") or not line:
+                        continue
+                    if line.startswith(f"{var_name}="):
+                        val = line.split("=", 1)[1].strip()
+                        cleaned = val.strip('"').strip("'")
+                        if cleaned:
+                            return cleaned
+        except Exception:
+            pass
+    return None
 
 
 class ElevenLabsTTSAdapter(TTSAdapter):
@@ -43,53 +65,77 @@ class ElevenLabsTTSAdapter(TTSAdapter):
         session: Optional[requests.Session] = None,
     ) -> None:
         self._explicit_api_key: Optional[str] = api_key
-        self._voice_id: str = voice_id or os.environ.get("ELEVENLABS_VOICE_ID") or DEFAULT_VOICE_ID
-        self._model_id: str = model_id or os.environ.get("ELEVENLABS_MODEL_ID") or DEFAULT_MODEL_ID
+        self._explicit_voice_id: Optional[str] = voice_id
+        self._explicit_model_id: Optional[str] = model_id
         self._output_format: str = output_format or DEFAULT_OUTPUT_FORMAT
         self._timeout_seconds: float = timeout_seconds
         self._session: requests.Session = session or requests.Session()
         self._cache: Dict[str, TTSAudioClip] = {}
+        self._terminal_error: Optional[Exception] = None
 
     @property
-    def voice_id(self) -> str:
-        return self._voice_id
+    def voice_id(self) -> Optional[str]:
+        """Return the resolved voice ID if configured, or None."""
+        return self._resolve_voice_id_optional()
 
     @property
     def model_id(self) -> str:
-        return self._model_id
+        """Return the resolved model ID."""
+        return self._resolve_model_id()
 
     @property
     def output_format(self) -> str:
         return self._output_format
 
+    def _resolve_voice_id_optional(self) -> Optional[str]:
+        """Resolve voice ID without raising if missing."""
+        if self._explicit_voice_id and self._explicit_voice_id.strip():
+            return self._explicit_voice_id.strip()
+        val = os.environ.get("ELEVENLABS_VOICE_ID") or os.environ.get("TTS_VOICE_ID")
+        if val and val.strip():
+            return val.strip()
+        env_val = _read_env_file_var("ELEVENLABS_VOICE_ID") or _read_env_file_var("TTS_VOICE_ID")
+        if env_val and env_val.strip():
+            return env_val.strip()
+        return None
+
+    def _resolve_voice_id(self) -> str:
+        """Resolve voice ID or raise clear TTSConfigurationError.
+
+        Prevents silently falling back to a paid library voice that breaks free-tier users.
+        """
+        vid = self._resolve_voice_id_optional()
+        if not vid:
+            raise TTSConfigurationError(
+                "ELEVENLABS_VOICE_ID is not configured. "
+                "Set ELEVENLABS_VOICE_ID in your environment or .env file with your free-tier compatible voice ID "
+                "(e.g. created in ElevenLabs VoiceLab)."
+            )
+        return vid
+
     def _resolve_api_key(self) -> str:
         """Resolve API key lazily from explicit config, environment variables, or .env file."""
         key = self._explicit_api_key or os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("TTS_API_KEY")
         if not key:
-            env_path = os.path.join(os.getcwd(), ".env")
-            if os.path.exists(env_path):
-                try:
-                    with open(env_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line.startswith("ELEVENLABS_API_KEY="):
-                                candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
-                                if candidate:
-                                    key = candidate
-                                    break
-                            elif line.startswith("TTS_API_KEY="):
-                                candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
-                                if candidate:
-                                    key = candidate
-                                    break
-                except Exception:
-                    pass
+            key = _read_env_file_var("ELEVENLABS_API_KEY") or _read_env_file_var("TTS_API_KEY")
 
         if not key or not key.strip():
             raise TTSAuthenticationError(
-                "ElevenLabs API key is missing. Set ELEVENLABS_API_KEY or TTS_API_KEY environment variable."
+                "ElevenLabs API key is missing. Set ELEVENLABS_API_KEY in your environment or .env file."
             )
         return key.strip()
+
+    def _resolve_model_id(self) -> str:
+        """Resolve model ID from explicit config, environment, .env, or default."""
+        if self._explicit_model_id and self._explicit_model_id.strip():
+            return self._explicit_model_id.strip()
+        val = os.environ.get("ELEVENLABS_MODEL_ID")
+        if val and val.strip():
+            return val.strip()
+        env_val = _read_env_file_var("ELEVENLABS_MODEL_ID")
+        if env_val and env_val.strip():
+            return env_val.strip()
+        return DEFAULT_MODEL_ID
 
     def _determine_sample_rate(self) -> int:
         """Determine sample rate from output_format parameter."""
@@ -104,11 +150,25 @@ class ElevenLabsTTSAdapter(TTSAdapter):
             return 22050
         return 24000
 
+    def reset_terminal_error(self) -> None:
+        """Clear the circuit breaker after configuration update or new session."""
+        self._terminal_error = None
+
     def synthesize(self, text: str) -> TTSAudioClip:
         """Synthesize text into in-memory PCM audio using ElevenLabs.
 
         Employs in-memory caching to avoid redundant API consumption and costs.
+        Enforces a circuit breaker on terminal provider errors (e.g. HTTP 402/401/config)
+        to prevent burning quota or spamming provider requests segment-by-segment.
         """
+        # Circuit breaker: halt immediately if previous call in this session failed terminally
+        if self._terminal_error is not None:
+            logger.debug(
+                "Circuit breaker active: skipping ElevenLabs call due to prior terminal error: %s",
+                self._terminal_error,
+            )
+            raise self._terminal_error
+
         clean_text = text.strip() if text else ""
         if not clean_text:
             return TTSAudioClip(
@@ -118,17 +178,26 @@ class ElevenLabsTTSAdapter(TTSAdapter):
                 text="",
             )
 
+        # Validate configuration before making request
+        try:
+            voice_id = self._resolve_voice_id()
+            api_key = self._resolve_api_key()
+        except Exception as config_err:
+            self._terminal_error = config_err
+            raise config_err
+
+        model_id = self._resolve_model_id()
+
         # Check in-memory cache
-        cache_key = f"{self._voice_id}:{self._model_id}:{clean_text}"
+        cache_key = f"{voice_id}:{model_id}:{clean_text}"
         if cache_key in self._cache:
             logger.debug("Returning cached TTS audio clip for text: %s", clean_text[:40])
             return self._cache[cache_key]
 
-        api_key = self._resolve_api_key()
         sample_rate = self._determine_sample_rate()
 
         url = (
-            f"https://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}"
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
             f"?output_format={self._output_format}"
         )
         headers = {
@@ -138,7 +207,7 @@ class ElevenLabsTTSAdapter(TTSAdapter):
         }
         payload = {
             "text": clean_text,
-            "model_id": self._model_id,
+            "model_id": model_id,
             "voice_settings": {
                 "stability": 0.5,
                 "similarity_boost": 0.75,
@@ -147,8 +216,8 @@ class ElevenLabsTTSAdapter(TTSAdapter):
 
         logger.info(
             "Requesting ElevenLabs TTS (voice=%s, model=%s, text_length=%d)",
-            self._voice_id,
-            self._model_id,
+            voice_id,
+            model_id,
             len(clean_text),
         )
 
@@ -171,24 +240,57 @@ class ElevenLabsTTSAdapter(TTSAdapter):
 
         # Error response normalization
         if response.status_code == 401:
-            raise TTSAuthenticationError(
+            err = TTSAuthenticationError(
                 "ElevenLabs authentication failed (HTTP 401): invalid API key."
             )
+            self._terminal_error = err
+            raise err
+
+        if response.status_code == 402:
+            err = TTSPaidPlanRequiredError(
+                "ElevenLabs paid plan required for this voice. Free users cannot use library voices via the API. "
+                "Please configure a free-tier compatible voice ID via ELEVENLABS_VOICE_ID.",
+                details=response.text,
+            )
+            self._terminal_error = err
+            raise err
+
         if response.status_code == 429:
-            raise TTSQuotaExceededError(
+            err = TTSQuotaExceededError(
                 "ElevenLabs quota exceeded or rate limit reached (HTTP 429)."
             )
+            self._terminal_error = err
+            raise err
+
         if response.status_code == 400:
             err_body = response.text
-            if "quota" in err_body.lower():
-                raise TTSQuotaExceededError(f"ElevenLabs quota exceeded: {err_body}")
+            err_body_lower = err_body.lower()
+            if "paid_plan_required" in err_body_lower:
+                err = TTSPaidPlanRequiredError(
+                    "ElevenLabs paid plan required for this voice. Free users cannot use library voices via the API. "
+                    "Please configure a free-tier compatible voice ID via ELEVENLABS_VOICE_ID.",
+                    details=err_body,
+                )
+                self._terminal_error = err
+                raise err
+            if "quota" in err_body_lower:
+                err = TTSQuotaExceededError(f"ElevenLabs quota exceeded: {err_body}")
+                self._terminal_error = err
+                raise err
+            if "voice" in err_body_lower:
+                err = TTSConfigurationError(f"ElevenLabs voice configuration error: {err_body}")
+                self._terminal_error = err
+                raise err
             raise TTSError(f"ElevenLabs bad request (HTTP 400): {err_body}")
+
         if response.status_code in (408, 504):
             raise TTSTimeoutError(f"ElevenLabs request timed out (HTTP {response.status_code}).")
+
         if response.status_code >= 500:
             raise TTSNetworkError(
                 f"ElevenLabs server error (HTTP {response.status_code}): {response.text}"
             )
+
         if not response.ok:
             raise TTSError(
                 f"ElevenLabs synthesis failed (HTTP {response.status_code}): {response.text}"

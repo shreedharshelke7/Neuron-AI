@@ -110,6 +110,12 @@ class SequenceController:
             self._cancelled = False
             self._is_active = True
 
+        if hasattr(self.tts_adapter, "reset_terminal_error"):
+            try:
+                self.tts_adapter.reset_terminal_error()
+            except Exception:
+                pass
+
         # AC-07: Ensure visual overlay is rendered before or when narration starts
         if self.overlay_host is not None:
             try:
@@ -181,6 +187,7 @@ class SequenceController:
             except Exception as ex:
                 logger.error("TTS synthesis error on segment %d ('%s'): %s", seg_idx, segment_text[:30], ex)
                 with self._lock:
+                    self._cancelled = True
                     self._is_active = False
                 if self.on_error:
                     try:
@@ -209,6 +216,7 @@ class SequenceController:
             except Exception as play_ex:
                 logger.error("Audio playback error on segment %d: %s", seg_idx, play_ex)
                 with self._lock:
+                    self._cancelled = True
                     self._is_active = False
                 if self.on_error:
                     try:
