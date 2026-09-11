@@ -1,0 +1,48 @@
+"""Pydantic schemas for Gemini structured JSON output in Block 3."""
+
+from __future__ import annotations
+
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+
+class OverlayActionSchema(BaseModel):
+    """Schema for structured visual guidance actions."""
+
+    action_type: str = Field(
+        description="Type of overlay action: FOCUS_BOX, ARROW, PIN, UNDERLINE, or NONE"
+    )
+    target_normalized: Optional[List[float]] = Field(
+        default=None,
+        description="Normalized coordinates [nx, ny, nw, nh] bounded strictly within 0.0 to 1.0",
+    )
+    label: Optional[str] = Field(
+        default=None,
+        description="Concise annotation or label explaining the focused visual element",
+    )
+    color: Optional[str] = Field(
+        default=None,
+        description="Optional hex color or name (e.g. #4285F4 or blue)",
+    )
+
+
+class TutorResponseSchema(BaseModel):
+    """Schema for structured educational response from Gemini."""
+
+    intent: str = Field(
+        description="Educational intent: explanation, hint, clarification, or solution_step"
+    )
+    summary: str = Field(
+        description="Concise educational summary (1-3 sentences) suitable for quick reading in the desktop UI"
+    )
+    narration: str = Field(
+        description="Detailed conversational explanation suitable for audio narration and complete understanding"
+    )
+    overlay_actions: List[OverlayActionSchema] = Field(
+        default_factory=list,
+        description="List of visual overlay guidance actions corresponding to elements on the user's screen",
+    )
+    follow_up: Optional[str] = Field(
+        default=None,
+        description="Optional Socratic follow-up question to prompt user reflection or next exploration step",
+    )

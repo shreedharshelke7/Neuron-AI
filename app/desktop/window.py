@@ -196,6 +196,16 @@ class DesktopShellWindow(QMainWindow):
                 "color: #065f46; background-color: #d1fae5; "
                 "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
             )
+        elif state == SessionState.THINKING:
+            self.state_label.setStyleSheet(
+                "color: #1e40af; background-color: #dbeafe; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
+            )
+        elif state == SessionState.RESPONDED:
+            self.state_label.setStyleSheet(
+                "color: #065f46; background-color: #d1fae5; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
+            )
         elif state in (SessionState.SELECTING, SessionState.SELECTED):
             self.state_label.setStyleSheet(
                 "color: #0d904f; background-color: #e6f4ea; "
@@ -248,6 +258,26 @@ class DesktopShellWindow(QMainWindow):
             res = self._controller.current_transcript
             text = res.transcript if res is not None else ""
             self.audio_info_label.setText(f"Transcript:\n{text}")
+            self.audio_info_label.setStyleSheet(
+                "color: #065f46; background: #d1fae5; border-radius: 4px; padding: 6px; font-weight: 500;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.THINKING:
+            self.audio_info_label.setText("Neuron is thinking...")
+            self.audio_info_label.setStyleSheet(
+                "color: #1e40af; background: #dbeafe; border-radius: 4px; padding: 6px; font-weight: 500;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.RESPONDED:
+            tutor_res = self._controller.current_tutor_response
+            if tutor_res is not None:
+                display_text = f"[{tutor_res.intent.upper()}]\n{tutor_res.summary}"
+                if tutor_res.overlay_actions:
+                    actions_str = ", ".join(a.action_type.value for a in tutor_res.overlay_actions)
+                    display_text += f"\n(Actions: {actions_str})"
+            else:
+                display_text = "Response ready"
+            self.audio_info_label.setText(display_text)
             self.audio_info_label.setStyleSheet(
                 "color: #065f46; background: #d1fae5; border-radius: 4px; padding: 6px; font-weight: 500;"
             )

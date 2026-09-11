@@ -15,8 +15,10 @@ from app.capture.service import CaptureService, StubCaptureService
 from app.overlay.host import OverlayHost, StubOverlayHost
 from app.session.state import SessionState
 from app.stt.adapter import STTAdapter
-from app.stt.model import TranscriptResult
+from app.stt.model import TranscriptResult, UserQuestion
 from app.trigger.activation import ActivationTrigger, StubActivationTrigger
+from app.tutor.engine import TutorEngine
+from app.tutor.model import TutorRequest, TutorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,8 @@ class SessionController:
         audio_service: Optional[AudioCaptureService] = None,
         stt_adapter: Optional[STTAdapter] = None,
         stt_bridge: Optional[Any] = None,
+        tutor_engine: Optional[TutorEngine] = None,
+        tutor_bridge: Optional[Any] = None,
         auto_capture: bool = False,
     ) -> None:
         self._state: SessionState = SessionState.IDLE
@@ -50,6 +54,7 @@ class SessionController:
         self._selected_region: Optional[SelectedRegion] = None
         self._current_audio: Optional[AudioCaptureResult] = None
         self._current_transcript: Optional[TranscriptResult] = None
+        self._current_tutor_response: Optional[TutorResponse] = None
         self._last_error_message: Optional[str] = None
         self._session_token: int = 0
         self._active_worker_thread: Optional[threading.Thread] = None
@@ -57,6 +62,8 @@ class SessionController:
         self.audio_service: Optional[AudioCaptureService] = audio_service
         self.stt_adapter: Optional[STTAdapter] = stt_adapter
         self._stt_bridge: Optional[Any] = stt_bridge
+        self.tutor_engine: Optional[TutorEngine] = tutor_engine
+        self._tutor_bridge: Optional[Any] = tutor_bridge
         self.capture_service: CaptureService = (
             capture_service or StubCaptureService()
         )
@@ -99,6 +106,11 @@ class SessionController:
         return self._current_transcript
 
     @property
+    def current_tutor_response(self) -> Optional[TutorResponse]:
+        """Ephemeral tutor response result for the active session."""
+        return self._current_tutor_response
+
+    @property
     def last_error_message(self) -> Optional[str]:
         """Human-readable message for the last encountered error."""
         return self._last_error_message
@@ -111,6 +123,10 @@ class SessionController:
     def set_stt_bridge(self, bridge: Any) -> None:
         """Set or update the bridge object used to marshal worker events."""
         self._stt_bridge = bridge
+
+    def set_tutor_bridge(self, bridge: Any) -> None:
+        """Set or update the bridge object used to marshal tutor worker events."""
+        self._tutor_bridge = bridge
 
     def add_state_listener(self, listener: Callable[[SessionState], None]) -> None:
         """Register a callback invoked when the session state changes."""
@@ -247,6 +263,9 @@ class SessionController:
         self._current_audio = None  # Ephemeral raw audio released immediately on success
         self._set_state(SessionState.TRANSCRIBED)
 
+        if self.tutor_engine is not None and not result.is_empty:
+            self._start_tutor_flow(result, token)
+
     def handle_transcription_error(
         self, error_message: str, token: int
     ) -> None:
@@ -265,6 +284,97 @@ class SessionController:
         self._current_transcript = None
         self._set_state(SessionState.ERROR)
 
+    def _start_tutor_flow(self, transcript_result: TranscriptResult, token: int) -> None:
+        """Construct TutorRequest and transition to THINKING."""
+        if token != self._session_token or self._state != SessionState.TRANSCRIBED:
+            return
+        user_question = UserQuestion.from_transcript_result(transcript_result)
+        request = TutorRequest(
+            question=user_question,
+            capture=self._current_capture,
+            selected_region=self._selected_region,
+            session_token=token,
+        )
+        self._set_state(SessionState.THINKING)
+        self._start_tutor_worker(request, token)
+
+    def _start_tutor_worker(
+        self, request: TutorRequest, token: int
+    ) -> None:
+        """Spawn a background daemon thread to run Tutor reasoning."""
+        bridge = self._tutor_bridge
+        engine = self.tutor_engine
+
+        def _worker() -> None:
+            try:
+                assert engine is not None
+                tutor_res = engine.process_request(request)
+                if bridge is not None and hasattr(bridge, "emit_result"):
+                    bridge.emit_result(tutor_res, token)
+                elif bridge is not None and hasattr(bridge, "result_ready"):
+                    bridge.result_ready.emit(tutor_res, token)
+                else:
+                    self.handle_tutor_success(tutor_res, token)
+            except Exception as exc:
+                err_msg = str(exc)
+                if bridge is not None and hasattr(bridge, "emit_error"):
+                    bridge.emit_error(err_msg, token)
+                elif bridge is not None and hasattr(bridge, "error_occurred"):
+                    bridge.error_occurred.emit(err_msg, token)
+                else:
+                    self.handle_tutor_error(err_msg, token)
+
+        worker_thread = threading.Thread(
+            target=_worker,
+            name=f"Neuron-Tutor-Worker-{token}",
+            daemon=True,
+        )
+        self._active_worker_thread = worker_thread
+        worker_thread.start()
+
+    def handle_tutor_success(
+        self, result: TutorResponse, token: int
+    ) -> None:
+        """Handle successful tutor response from background worker."""
+        if token != self._session_token or self._state != SessionState.THINKING:
+            logger.debug(
+                "Dropping late or stale tutor response (token=%d, current_token=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
+
+        self._current_tutor_response = result
+        self._set_state(SessionState.RESPONDED)
+
+    def handle_tutor_error(
+        self, error_message: str, token: int
+    ) -> None:
+        """Handle tutor failure from background worker."""
+        if token != self._session_token or self._state != SessionState.THINKING:
+            logger.debug(
+                "Dropping late or stale tutor error (token=%d, current_token=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
+
+        self._last_error_message = error_message
+        self._current_tutor_response = None
+        self._set_state(SessionState.ERROR)
+
+    def request_tutor(self) -> None:
+        """Manually trigger tutor reasoning for the current transcript and capture."""
+        if self._current_transcript is None or self._current_transcript.is_empty:
+            logger.warning("Cannot request tutor: no transcript available.")
+            return
+        if self.tutor_engine is None:
+            logger.warning("Cannot request tutor: no tutor_engine configured.")
+            return
+        self._start_tutor_flow(self._current_transcript, self._session_token)
+
     def request_activation(self) -> None:
         """Handle an activation request from an activation trigger."""
         if self._state == SessionState.LISTENING:
@@ -275,6 +385,8 @@ class SessionController:
         if self._state in (
             SessionState.VOICE_CAPTURED,
             SessionState.TRANSCRIBED,
+            SessionState.THINKING,
+            SessionState.RESPONDED,
             SessionState.ERROR,
         ):
             self.dismiss()
@@ -286,6 +398,7 @@ class SessionController:
         self._last_error_message = None
         self._current_audio = None
         self._current_transcript = None
+        self._current_tutor_response = None
         self._session_token += 1
         self._set_state(SessionState.ACTIVATED)
 
@@ -355,6 +468,7 @@ class SessionController:
 
             self._current_audio = None
             self._current_transcript = None
+            self._current_tutor_response = None
 
             if self.overlay_host.is_visible():
                 self.overlay_host.dismiss()

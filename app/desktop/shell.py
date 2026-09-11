@@ -19,6 +19,8 @@ from app.session.controller import SessionController
 from app.stt.adapter import STTAdapter
 from app.stt.whisper_stt import LocalWhisperSTTAdapter
 from app.trigger.manager import ActivationManager
+from app.tutor.engine import TutorEngine
+from app.tutor.gemini import GeminiTutorAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,21 @@ class STTSignalBridge(QObject):
         self.error_occurred.emit(error_message, token)
 
 
+class TutorSignalBridge(QObject):
+    """Qt signal bridge ensuring worker thread tutor events execute on Qt GUI thread."""
+
+    result_ready = Signal(object, int)  # (TutorResponse, token)
+    error_occurred = Signal(str, int)   # (error_message, token)
+
+    def emit_result(self, result: Any, token: int) -> None:
+        """Emit result_ready signal safely from worker thread."""
+        self.result_ready.emit(result, token)
+
+    def emit_error(self, error_message: str, token: int) -> None:
+        """Emit error_occurred signal safely from worker thread."""
+        self.error_occurred.emit(error_message, token)
+
+
 class NeuronDesktopApp:
     """Manages the lifecycle of the Neuron desktop shell application."""
 
@@ -53,6 +70,7 @@ class NeuronDesktopApp:
         activation_manager: Optional[ActivationManager] = None,
         audio_service: Optional[AudioCaptureService] = None,
         stt_adapter: Optional[STTAdapter] = None,
+        tutor_engine: Optional[TutorEngine] = None,
         argv: Optional[List[str]] = None,
     ) -> None:
         self._argv = argv if argv is not None else sys.argv
@@ -65,6 +83,7 @@ class NeuronDesktopApp:
         # Signal bridges for thread-safe cross-thread execution
         self._bridge = HotkeySignalBridge()
         self._stt_bridge = STTSignalBridge()
+        self._tutor_bridge = TutorSignalBridge()
 
         # Instantiate concrete desktop services if not injected
         if session_controller is None:
@@ -78,11 +97,14 @@ class NeuronDesktopApp:
                 audio_service=audio_service,
                 stt_adapter=stt_adapter,
                 stt_bridge=self._stt_bridge,
+                tutor_engine=tutor_engine,
+                tutor_bridge=self._tutor_bridge,
                 auto_capture=True,
             )
         else:
             self._session_controller = session_controller
             self._session_controller.set_stt_bridge(self._stt_bridge)
+            self._session_controller.set_tutor_bridge(self._tutor_bridge)
 
         self._bridge.activated.connect(self._session_controller.request_activation)
         self._stt_bridge.result_ready.connect(
@@ -90,6 +112,12 @@ class NeuronDesktopApp:
         )
         self._stt_bridge.error_occurred.connect(
             self._session_controller.handle_transcription_error
+        )
+        self._tutor_bridge.result_ready.connect(
+            self._session_controller.handle_tutor_success
+        )
+        self._tutor_bridge.error_occurred.connect(
+            self._session_controller.handle_tutor_error
         )
 
         self._activation_manager = activation_manager or ActivationManager(
@@ -110,6 +138,11 @@ class NeuronDesktopApp:
     def stt_bridge(self) -> STTSignalBridge:
         """Access the STT signal bridge."""
         return self._stt_bridge
+
+    @property
+    def tutor_bridge(self) -> TutorSignalBridge:
+        """Access the Tutor signal bridge."""
+        return self._tutor_bridge
 
     def initialize_qapplication(self) -> QApplication:
         """Create or return the single QApplication instance."""
@@ -156,6 +189,7 @@ def run_desktop_shell(
     argv: Optional[List[str]] = None,
     audio_service: Optional[AudioCaptureService] = None,
     stt_adapter: Optional[STTAdapter] = None,
+    tutor_engine: Optional[TutorEngine] = None,
 ) -> int:
     """Convenience entry point function to launch the desktop shell."""
     service = (
@@ -168,9 +202,15 @@ def run_desktop_shell(
         if stt_adapter is not None
         else LocalWhisperSTTAdapter()
     )
+    engine = (
+        tutor_engine
+        if tutor_engine is not None
+        else TutorEngine(adapter=GeminiTutorAdapter())
+    )
     app = NeuronDesktopApp(
         audio_service=service,
         stt_adapter=adapter,
+        tutor_engine=engine,
         argv=argv,
     )
     return app.run()
