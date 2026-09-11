@@ -52,14 +52,35 @@ class GeminiTutorAdapter(TutorAdapter):
         client_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         self._api_key = api_key
-        self._model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
+        self._model_param = model
         self._client_factory = client_factory
         self._client: Optional[Any] = None
+
+    def _resolve_model(self) -> str:
+        """Resolve model from constructor, environment, or .env file, defaulting to DEFAULT_MODEL."""
+        if self._model_param and self._model_param.strip():
+            return self._model_param.strip()
+        env_model = os.environ.get("GEMINI_MODEL")
+        if env_model and env_model.strip():
+            return env_model.strip()
+        env_path = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("GEMINI_MODEL="):
+                            candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            if candidate:
+                                return candidate
+            except Exception:
+                pass
+        return DEFAULT_MODEL
 
     @property
     def model(self) -> str:
         """The active Gemini model identifier."""
-        return self._model
+        return self._resolve_model()
 
     def _resolve_api_key(self) -> str:
         """Resolve API key from instance configuration, environment, or .env file."""
@@ -132,23 +153,34 @@ class GeminiTutorAdapter(TutorAdapter):
             except Exception as exc:
                 logger.warning("Could not convert capture to GenAI Part: %s", exc)
 
-        try:
-            from google.genai import types
+        max_retries = 3
+        raw_response = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                from google.genai import types
 
-            config = types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                response_mime_type="application/json",
-                response_schema=TutorResponseSchema,
-                temperature=0.3,
-            )
+                config = types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json",
+                    response_schema=TutorResponseSchema,
+                    temperature=0.3,
+                )
 
-            raw_response = client.models.generate_content(
-                model=self._model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            self._handle_api_exception(exc)
+                raw_response = client.models.generate_content(
+                    model=self._resolve_model(),
+                    contents=contents,
+                    config=config,
+                )
+                break
+            except Exception as exc:
+                err_str = str(exc).lower()
+                err_code = getattr(exc, "code", None)
+                if (err_code == 503 or "503" in err_str or "unavailable" in err_str or "high demand" in err_str) and attempt < max_retries:
+                    logger.warning("Gemini 503 high demand spike, retrying (attempt %d/%d)...", attempt, max_retries)
+                    import time
+                    time.sleep(2.0 * attempt)
+                    continue
+                self._handle_api_exception(exc)
 
         return self._parse_response(raw_response)
 

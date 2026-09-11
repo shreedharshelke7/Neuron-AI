@@ -22,9 +22,10 @@ from app.tutor.prompt import build_user_prompt, extract_image_bytes
 
 
 class TestGeminiTutorAdapterConstruction:
-    def test_construction_is_side_effect_free(self, monkeypatch):
-        # Clear GEMINI_API_KEY from environment to prove construction doesn't require it
+    def test_construction_is_side_effect_free(self, monkeypatch, tmp_path):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        monkeypatch.chdir(tmp_path)
 
         adapter = GeminiTutorAdapter()
         assert adapter.model == "gemini-2.5-flash"
@@ -38,15 +39,34 @@ class TestGeminiTutorAdapterConstruction:
         adapter_explicit = GeminiTutorAdapter(model="gemini-explicit")
         assert adapter_explicit.model == "gemini-explicit"
 
+    def test_resolves_model_from_dotenv(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text('GEMINI_MODEL="gemini-dotenv-test"\n', encoding="utf-8")
+        adapter = GeminiTutorAdapter()
+        assert adapter.model == "gemini-dotenv-test"
+
 
 class TestGeminiApiKeyResolution:
-    def test_missing_api_key_raises_authentication_error(self, monkeypatch):
+    def test_missing_api_key_raises_authentication_error(self, monkeypatch, tmp_path):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
         adapter = GeminiTutorAdapter()
         req = TutorRequest(question=UserQuestion(transcript="Hello", audio_duration=1.0))
 
         with pytest.raises(TutorAuthenticationError, match="GEMINI_API_KEY is not set"):
             adapter.generate_response(req)
+
+    def test_resolves_key_from_dotenv(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text('GEMINI_API_KEY="test_dotenv_key"\n', encoding="utf-8")
+        mock_client = MagicMock()
+        factory = MagicMock(return_value=mock_client)
+        adapter = GeminiTutorAdapter(client_factory=factory)
+        client = adapter._get_client()
+        assert client is mock_client
+        factory.assert_called_once_with(api_key="test_dotenv_key")
 
     def test_resolves_key_from_constructor(self):
         mock_client = MagicMock()

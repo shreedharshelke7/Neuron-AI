@@ -69,8 +69,7 @@ def run_smoke_test() -> int:
     # Initialize QApplication for screen capture
     app = QApplication.instance() or QApplication([])
 
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    adapter = GeminiTutorAdapter(api_key=key, model=model_name)
+    adapter = GeminiTutorAdapter(api_key=key)
     print(f"[2/4] Initialized GeminiTutorAdapter with model: {adapter.model}")
 
     # Capture screen
