@@ -43,6 +43,8 @@ class SessionController:
         tutor_engine: Optional[TutorEngine] = None,
         tutor_bridge: Optional[Any] = None,
         auto_capture: bool = False,
+        desktop_window: Optional[Any] = None,
+        capture_delay_ms: int = 80,
     ) -> None:
         self._state: SessionState = SessionState.IDLE
         self._auto_capture: bool = auto_capture
@@ -58,6 +60,12 @@ class SessionController:
         self._last_error_message: Optional[str] = None
         self._session_token: int = 0
         self._active_worker_thread: Optional[threading.Thread] = None
+
+        self._desktop_window: Optional[Any] = desktop_window
+        self._capture_delay_ms: int = capture_delay_ms
+        self._window_was_visible: bool = False
+        self._window_was_maximized: bool = False
+        self._capture_pending: bool = False
 
         self.audio_service: Optional[AudioCaptureService] = audio_service
         self.stt_adapter: Optional[STTAdapter] = stt_adapter
@@ -119,6 +127,41 @@ class SessionController:
     def session_token(self) -> int:
         """Monotonic generation counter for race and cancellation protection."""
         return self._session_token
+
+    @property
+    def desktop_window(self) -> Optional[Any]:
+        """Registered desktop window if any."""
+        return self._desktop_window
+
+    def set_desktop_window(self, window: Optional[Any]) -> None:
+        """Register or unregister the desktop shell window for pre-capture hide/restore."""
+        self._desktop_window = window
+
+    @property
+    def capture_delay_ms(self) -> int:
+        """Delay in milliseconds before screen capture to allow desktop repainting."""
+        return self._capture_delay_ms
+
+    @capture_delay_ms.setter
+    def capture_delay_ms(self, delay_ms: int) -> None:
+        self._capture_delay_ms = max(0, int(delay_ms))
+
+    def _restore_desktop_window(self) -> None:
+        """Safely restore desktop window visibility and layout."""
+        self._capture_pending = False
+        win = self._desktop_window
+        if win is None or not self._window_was_visible:
+            return
+
+        try:
+            if self._window_was_maximized and hasattr(win, "showMaximized"):
+                win.showMaximized()
+            elif hasattr(win, "showNormal"):
+                win.showNormal()
+            elif hasattr(win, "show"):
+                win.show()
+        except Exception as exc:
+            logger.warning("Error restoring desktop window: %s", exc)
 
     def set_stt_bridge(self, bridge: Any) -> None:
         """Set or update the bridge object used to marshal worker events."""
@@ -408,28 +451,89 @@ class SessionController:
             if self.audio_service is not None:
                 self.start_listening()
 
-    def begin_capture_flow(self) -> None:
-        """Orchestrate the capture, indicator, and overlay display sequence."""
-        # 1. Show capture indicator
-        self.capture_indicator.show()
+    def begin_capture_flow(self, delay_ms: Optional[int] = None) -> None:
+        """Orchestrate pre-capture window hiding, compositor repaint, and capture sequence."""
+        token = self._session_token
         self._set_state(SessionState.CAPTURING)
 
+        win = self._desktop_window
+        has_win_to_hide = False
+        if win is not None:
+            self._window_was_visible = win.isVisible() if hasattr(win, "isVisible") else True
+            self._window_was_maximized = win.isMaximized() if hasattr(win, "isMaximized") else False
+            if self._window_was_visible and hasattr(win, "hide"):
+                has_win_to_hide = True
+                self._capture_pending = True
+                win.hide()
+
+            # Process pending Qt events so Windows/DWM registers the hide
+            try:
+                from PySide6.QtWidgets import QApplication
+
+                qapp = QApplication.instance()
+                if qapp is not None:
+                    qapp.processEvents()
+            except Exception:
+                pass
+
+        effective_delay = (
+            delay_ms
+            if delay_ms is not None
+            else (self._capture_delay_ms if has_win_to_hide else 0)
+        )
+
+        if effective_delay > 0:
+            try:
+                from PySide6.QtCore import QTimer
+
+                QTimer.singleShot(
+                    effective_delay, lambda: self._execute_capture(token)
+                )
+                return
+            except Exception as ex:
+                logger.warning("Failed to schedule delayed capture: %s", ex)
+
+        # Immediate capture (no window or delay_ms <= 0)
+        self._execute_capture(token)
+
+    def _execute_capture(self, token: int) -> None:
+        """Execute screen capture while window is hidden, then restore window and continue."""
+        if token != self._session_token or self._state != SessionState.CAPTURING:
+            logger.debug(
+                "Dropping stale capture execution (token=%d, current=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            self._restore_desktop_window()
+            return
+
+        captured = None
         try:
-            # 2. Capture current screen
-            captured = self.capture_service.capture_current_screen()
+            self.capture_indicator.show()
+            try:
+                captured = self.capture_service.capture_current_screen()
+            finally:
+                self.capture_indicator.hide()
         except Exception as e:
             logger.exception("Screen capture failed: %s", e)
-            self.capture_indicator.hide()
             self._set_state(SessionState.ERROR)
             self.reset_to_idle()
             return
+        finally:
+            self._restore_desktop_window()
 
-        # 3. Dismiss capture indicator
-        self.capture_indicator.hide()
+        if token != self._session_token or self._state != SessionState.CAPTURING:
+            logger.debug(
+                "Dropping capture result after completion (token=%d, current=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
 
         if captured is not None and captured.geometry is not None:
             self._current_capture = captured
-            # 4. Show transparent overlay
             self.overlay_host.show(geometry=captured.geometry)
             if self.audio_service is not None:
                 self.start_listening()
@@ -442,7 +546,7 @@ class SessionController:
     def on_region_selected(self, region: SelectedRegion) -> None:
         """Handle region selection from the overlay host."""
         self._selected_region = region
-        if self._state != SessionState.LISTENING:
+        if self._state in (SessionState.CAPTURING, SessionState.SELECTING):
             self._set_state(SessionState.SELECTED)
         for listener in list(self._region_listeners):
             try:
@@ -457,14 +561,19 @@ class SessionController:
 
         self._dismissing = True
         try:
-            # Invalidate any in-flight transcription worker
+            # Invalidate any in-flight transcription worker or pending capture
             self._session_token += 1
+
+            if self._capture_pending:
+                self._restore_desktop_window()
 
             if self.audio_service is not None:
                 try:
                     self.audio_service.cancel_recording()
                 except Exception as err:
-                    logger.warning("Error cancelling audio recording during dismiss: %s", err)
+                    logger.warning(
+                        "Error cancelling audio recording during dismiss: %s", err
+                    )
 
             self._current_audio = None
             self._current_transcript = None

@@ -42,6 +42,8 @@ class DesktopShellWindow(QMainWindow):
         self._setup_local_shortcuts()
         self._controller.add_state_listener(self._on_state_changed)
         self._controller.add_region_listener(self._on_region_selected)
+        if hasattr(self._controller, "set_desktop_window"):
+            self._controller.set_desktop_window(self)
 
     def _init_ui(self) -> None:
         self.setWindowTitle("Neuron AI")
@@ -309,6 +311,8 @@ class DesktopShellWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle clean window close."""
+        if hasattr(self._controller, "set_desktop_window"):
+            self._controller.set_desktop_window(None)
         self._controller.dismiss()
         self._controller.remove_state_listener(self._on_state_changed)
         self._controller.remove_region_listener(self._on_region_selected)
