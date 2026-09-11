@@ -25,6 +25,8 @@ from app.tts.elevenlabs import ElevenLabsTTSAdapter
 from app.tts.playback import AudioPlaybackService, SoundDevicePlaybackService
 from app.tutor.engine import TutorEngine
 from app.tutor.gemini import GeminiTutorAdapter
+from app.wake.detector import WakeWordDetector
+from app.wake.factory import create_wake_detector
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ class NeuronDesktopApp:
         tts_adapter: Optional[TTSAdapter] = None,
         playback_service: Optional[AudioPlaybackService] = None,
         sequence_controller: Optional[SequenceController] = None,
+        wake_detector: Optional[WakeWordDetector] = None,
         argv: Optional[List[str]] = None,
     ) -> None:
         self._argv = argv if argv is not None else sys.argv
@@ -162,9 +165,30 @@ class NeuronDesktopApp:
             self._session_controller.handle_tts_error
         )
 
-        self._activation_manager = activation_manager or ActivationManager(
-            on_activate=self._bridge.activated.emit
-        )
+        if activation_manager is None:
+            final_wake_detector = (
+                wake_detector if wake_detector is not None else create_wake_detector()
+            )
+            self._activation_manager = ActivationManager(
+                on_activate=self._bridge.activated.emit,
+                wake_detector=final_wake_detector,
+            )
+        else:
+            self._activation_manager = activation_manager
+            if wake_detector is not None and self._activation_manager.wake_detector is None:
+                self._activation_manager.set_wake_detector(wake_detector)
+
+        # Coordinate wake detector microphone ownership and self-audio immunity
+        self._session_controller.add_state_listener(self._on_session_state_changed)
+
+    def _on_session_state_changed(self, state: Any) -> None:
+        """Coordinate wake detector microphone ownership and self-audio immunity based on state."""
+        from app.session.state import SessionState
+
+        if state == SessionState.IDLE:
+            self._activation_manager.resume_wake_detection()
+        else:
+            self._activation_manager.pause_wake_detection()
 
     @property
     def session_controller(self) -> SessionController:
@@ -237,6 +261,9 @@ def run_desktop_shell(
     audio_service: Optional[AudioCaptureService] = None,
     stt_adapter: Optional[STTAdapter] = None,
     tutor_engine: Optional[TutorEngine] = None,
+    tts_adapter: Optional[TTSAdapter] = None,
+    playback_service: Optional[AudioPlaybackService] = None,
+    wake_detector: Optional[WakeWordDetector] = None,
 ) -> int:
     """Convenience entry point function to launch the desktop shell."""
     service = (
@@ -258,6 +285,9 @@ def run_desktop_shell(
         audio_service=service,
         stt_adapter=adapter,
         tutor_engine=engine,
+        tts_adapter=tts_adapter,
+        playback_service=playback_service,
+        wake_detector=wake_detector,
         argv=argv,
     )
     return app.run()

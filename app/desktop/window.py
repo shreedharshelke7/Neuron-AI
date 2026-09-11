@@ -88,14 +88,14 @@ class DesktopShellWindow(QMainWindow):
         self._update_state_style(self._controller.state)
         layout.addWidget(self.state_label)
 
-        # Shortcut hint
-        hint_label = QLabel("Shortcut: Ctrl + Shift + Space", self)
+        # Shortcut / Voice trigger hint
+        self.hint_label = QLabel(self._format_trigger_hint(), self)
         hint_font = QFont()
         hint_font.setPointSize(9)
-        hint_label.setFont(hint_font)
-        hint_label.setStyleSheet("color: #888888;")
-        hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(hint_label)
+        self.hint_label.setFont(hint_font)
+        self.hint_label.setStyleSheet("color: #666666;")
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.hint_label)
 
         # Region info display label (shown when a region is selected)
         self.region_info_label = QLabel("", self)
@@ -224,6 +224,19 @@ class DesktopShellWindow(QMainWindow):
                 "padding: 4px 12px; border-radius: 4px;"
             )
 
+    def _format_trigger_hint(self) -> str:
+        """Format the trigger hint displaying both voice phrase and keyboard shortcut."""
+        if (
+            self._trigger is not None
+            and hasattr(self._trigger, "wake_detector")
+            and self._trigger.wake_detector is not None
+            and self._trigger.wake_detector.config.enabled
+            and self._trigger.wake_detector.is_available
+        ):
+            phrase = self._trigger.wake_detector.config.phrase
+            return f"Voice: '{phrase}'  •  Shortcut: Ctrl + Shift + Space"
+        return "Shortcut: Ctrl + Shift + Space"
+
     def _on_state_changed(self, state: SessionState) -> None:
         """Update the visible state label and controls when state changes."""
         self.state_label.setText(f"State: {state.value}")
@@ -231,7 +244,13 @@ class DesktopShellWindow(QMainWindow):
         self.reset_button.setEnabled(state != SessionState.IDLE)
         self.finish_button.setEnabled(state == SessionState.LISTENING)
 
-        if state == SessionState.LISTENING:
+        if state in (SessionState.ACTIVATED, SessionState.CAPTURING):
+            self.audio_info_label.setText("Preparing session & capturing screen...")
+            self.audio_info_label.setStyleSheet(
+                "color: #ea8600; background: #fef7e0; border-radius: 4px; padding: 6px;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.LISTENING:
             self.audio_info_label.setText("Neuron is listening... Speak your question.")
             self.audio_info_label.setStyleSheet(
                 "color: #b06000; background: #fef7e0; border-radius: 4px; padding: 6px;"
