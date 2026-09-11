@@ -15,10 +15,14 @@ from app.capture.qt_service import QtScreenCaptureService
 from app.desktop.indicator import CaptureIndicatorWidget
 from app.desktop.window import DesktopShellWindow
 from app.overlay.qt_overlay import QtOverlayHost
+from app.sequence.controller import SequenceController
 from app.session.controller import SessionController
 from app.stt.adapter import STTAdapter
 from app.stt.whisper_stt import LocalWhisperSTTAdapter
 from app.trigger.manager import ActivationManager
+from app.tts.adapter import TTSAdapter
+from app.tts.elevenlabs import ElevenLabsTTSAdapter
+from app.tts.playback import AudioPlaybackService, SoundDevicePlaybackService
 from app.tutor.engine import TutorEngine
 from app.tutor.gemini import GeminiTutorAdapter
 
@@ -61,6 +65,23 @@ class TutorSignalBridge(QObject):
         self.error_occurred.emit(error_message, token)
 
 
+class SequenceSignalBridge(QObject):
+    """Qt signal bridge ensuring worker thread TTS/sequencing events execute on Qt GUI thread."""
+
+    narration_started = Signal(int)       # token
+    narration_finished = Signal(int)      # token
+    tts_error = Signal(str, int)          # (error_message, token)
+
+    def emit_started(self, token: int) -> None:
+        self.narration_started.emit(token)
+
+    def emit_finished(self, token: int) -> None:
+        self.narration_finished.emit(token)
+
+    def emit_error(self, error_message: str, token: int) -> None:
+        self.tts_error.emit(error_message, token)
+
+
 class NeuronDesktopApp:
     """Manages the lifecycle of the Neuron desktop shell application."""
 
@@ -71,6 +92,9 @@ class NeuronDesktopApp:
         audio_service: Optional[AudioCaptureService] = None,
         stt_adapter: Optional[STTAdapter] = None,
         tutor_engine: Optional[TutorEngine] = None,
+        tts_adapter: Optional[TTSAdapter] = None,
+        playback_service: Optional[AudioPlaybackService] = None,
+        sequence_controller: Optional[SequenceController] = None,
         argv: Optional[List[str]] = None,
     ) -> None:
         self._argv = argv if argv is not None else sys.argv
@@ -84,12 +108,23 @@ class NeuronDesktopApp:
         self._bridge = HotkeySignalBridge()
         self._stt_bridge = STTSignalBridge()
         self._tutor_bridge = TutorSignalBridge()
+        self._sequence_bridge = SequenceSignalBridge()
 
         # Instantiate concrete desktop services if not injected
         if session_controller is None:
             capture_service = QtScreenCaptureService()
             overlay_host = QtOverlayHost()
             capture_indicator = CaptureIndicatorWidget()
+            final_tts_adapter = tts_adapter or ElevenLabsTTSAdapter()
+            final_playback_service = playback_service or SoundDevicePlaybackService()
+            final_sequence_controller = sequence_controller or SequenceController(
+                tts_adapter=final_tts_adapter,
+                playback_service=final_playback_service,
+                overlay_host=overlay_host,
+                on_started=self._sequence_bridge.emit_started,
+                on_finished=self._sequence_bridge.emit_finished,
+                on_error=self._sequence_bridge.emit_error,
+            )
             self._session_controller = SessionController(
                 capture_service=capture_service,
                 overlay_host=overlay_host,
@@ -99,6 +134,10 @@ class NeuronDesktopApp:
                 stt_bridge=self._stt_bridge,
                 tutor_engine=tutor_engine,
                 tutor_bridge=self._tutor_bridge,
+                tts_adapter=final_tts_adapter,
+                playback_service=final_playback_service,
+                sequence_controller=final_sequence_controller,
+                sequence_bridge=self._sequence_bridge,
                 auto_capture=True,
             )
         else:
@@ -118,6 +157,9 @@ class NeuronDesktopApp:
         )
         self._tutor_bridge.error_occurred.connect(
             self._session_controller.handle_tutor_error
+        )
+        self._sequence_bridge.tts_error.connect(
+            self._session_controller.handle_tts_error
         )
 
         self._activation_manager = activation_manager or ActivationManager(
@@ -143,6 +185,11 @@ class NeuronDesktopApp:
     def tutor_bridge(self) -> TutorSignalBridge:
         """Access the Tutor signal bridge."""
         return self._tutor_bridge
+
+    @property
+    def sequence_bridge(self) -> SequenceSignalBridge:
+        """Access the Sequence signal bridge."""
+        return self._sequence_bridge
 
     def initialize_qapplication(self) -> QApplication:
         """Create or return the single QApplication instance."""

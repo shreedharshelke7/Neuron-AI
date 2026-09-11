@@ -13,10 +13,13 @@ from app.capture.indicator import CaptureIndicator, StubCaptureIndicator
 from app.capture.model import CapturedScreen, SelectedRegion
 from app.capture.service import CaptureService, StubCaptureService
 from app.overlay.host import OverlayHost, StubOverlayHost
+from app.sequence.controller import SequenceController
 from app.session.state import SessionState
 from app.stt.adapter import STTAdapter
 from app.stt.model import TranscriptResult, UserQuestion
 from app.trigger.activation import ActivationTrigger, StubActivationTrigger
+from app.tts.adapter import TTSAdapter
+from app.tts.playback import AudioPlaybackService
 from app.tutor.engine import TutorEngine
 from app.tutor.model import TutorRequest, TutorResponse
 
@@ -42,6 +45,10 @@ class SessionController:
         stt_bridge: Optional[Any] = None,
         tutor_engine: Optional[TutorEngine] = None,
         tutor_bridge: Optional[Any] = None,
+        tts_adapter: Optional[TTSAdapter] = None,
+        playback_service: Optional[AudioPlaybackService] = None,
+        sequence_controller: Optional[SequenceController] = None,
+        sequence_bridge: Optional[Any] = None,
         auto_capture: bool = False,
         desktop_window: Optional[Any] = None,
         capture_delay_ms: int = 80,
@@ -72,6 +79,10 @@ class SessionController:
         self._stt_bridge: Optional[Any] = stt_bridge
         self.tutor_engine: Optional[TutorEngine] = tutor_engine
         self._tutor_bridge: Optional[Any] = tutor_bridge
+        self.tts_adapter: Optional[TTSAdapter] = tts_adapter
+        self.playback_service: Optional[AudioPlaybackService] = playback_service
+        self._sequence_bridge: Optional[Any] = sequence_bridge
+
         self.capture_service: CaptureService = (
             capture_service or StubCaptureService()
         )
@@ -83,6 +94,15 @@ class SessionController:
             activation_trigger
             or StubActivationTrigger(on_activate=self.request_activation)
         )
+
+        self.sequence_controller: Optional[SequenceController] = sequence_controller
+        if self.sequence_controller is None and (self.tts_adapter is not None or self.playback_service is not None):
+            self.sequence_controller = SequenceController(
+                tts_adapter=self.tts_adapter,
+                playback_service=self.playback_service,
+                overlay_host=self.overlay_host,
+                on_error=self.handle_tts_error,
+            )
 
         # Connect overlay callbacks
         self.overlay_host.set_on_region_selected(self.on_region_selected)
@@ -402,6 +422,41 @@ class SessionController:
         except Exception as ex:
             logger.exception("Error rendering tutor response on overlay: %s", ex)
 
+        # Start narration sequencing if configured
+        if self.sequence_controller is not None and result.narration:
+            geom = self._current_capture.geometry if self._current_capture else None
+            try:
+                self.sequence_controller.start_sequence(
+                    response=result,
+                    token=token,
+                    geometry=geom,
+                    selected_region=self._selected_region,
+                )
+            except Exception as ex:
+                logger.exception("Error starting narration sequence: %s", ex)
+
+    def handle_tts_error(self, error_message: str, token: int) -> None:
+        """Handle recoverable TTS failure during narration sequencing."""
+        if token != self._session_token:
+            logger.debug(
+                "Dropping late or stale TTS error (token=%d, current_token=%d).",
+                token,
+                self._session_token,
+            )
+            return
+        logger.warning("TTS error occurred during narration: %s", error_message)
+        self._last_error_message = error_message
+        if self._sequence_bridge and hasattr(self._sequence_bridge, "emit_error"):
+            try:
+                self._sequence_bridge.emit_error(error_message, token)
+            except Exception as ex:
+                logger.debug("Error emitting TTS error via bridge: %s", ex)
+
+    def set_sequence_controller(self, sequence_controller: SequenceController) -> None:
+        """Configure or swap the active sequence controller."""
+        self.sequence_controller = sequence_controller
+        self.sequence_controller.overlay_host = self.overlay_host
+
     def handle_tutor_error(
         self, error_message: str, token: int
     ) -> None:
@@ -445,6 +500,13 @@ class SessionController:
         ):
             self.dismiss()
 
+        # Stop active narration playback if any sequence is running
+        if self.sequence_controller is not None:
+            try:
+                self.sequence_controller.cancel()
+            except Exception as ex:
+                logger.warning("Error cancelling sequence controller on activation: %s", ex)
+
         if self._state != SessionState.IDLE:
             logger.debug("Activation request ignored (current state: %s).", self._state)
             return
@@ -469,6 +531,13 @@ class SessionController:
 
         win = self._desktop_window
         has_win_to_hide = False
+
+        # Stop any active narration playback from previous session before capture
+        if self.sequence_controller is not None:
+            try:
+                self.sequence_controller.cancel()
+            except Exception as ex:
+                logger.warning("Error cancelling sequence controller before capture: %s", ex)
 
         # Clear and hide any previous visual overlay before capturing so it does not contaminate screenshot
         if self.overlay_host is not None:
@@ -600,6 +669,12 @@ class SessionController:
             self._current_audio = None
             self._current_transcript = None
             self._current_tutor_response = None
+
+            if self.sequence_controller is not None:
+                try:
+                    self.sequence_controller.cancel()
+                except Exception as ex:
+                    logger.warning("Error cancelling sequence controller during dismiss: %s", ex)
 
             if self.overlay_host is not None:
                 try:
