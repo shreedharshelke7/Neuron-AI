@@ -12,7 +12,10 @@ from PySide6.QtWidgets import QApplication
 from app.audio.recorder import SoundDeviceAudioCaptureService
 from app.audio.service import AudioCaptureService
 from app.capture.qt_service import QtScreenCaptureService
+import os
 from app.desktop.indicator import CaptureIndicatorWidget
+from app.desktop.orb import ListeningOrbWidget
+from app.session.indicator import ListeningIndicator
 from app.desktop.window import DesktopShellWindow
 from app.overlay.qt_overlay import QtOverlayHost
 from app.sequence.controller import SequenceController
@@ -111,6 +114,7 @@ class NeuronDesktopApp:
         playback_service: Optional[AudioPlaybackService] = None,
         sequence_controller: Optional[SequenceController] = None,
         wake_detector: Optional[WakeWordDetector] = None,
+        listening_indicator: Optional[ListeningIndicator] = None,
         argv: Optional[List[str]] = None,
     ) -> None:
         self._argv = argv if argv is not None else sys.argv
@@ -132,6 +136,7 @@ class NeuronDesktopApp:
             capture_service = QtScreenCaptureService()
             overlay_host = QtOverlayHost()
             capture_indicator = CaptureIndicatorWidget()
+            final_listening_orb = listening_indicator or ListeningOrbWidget()
             final_tts_adapter = tts_adapter or ElevenLabsTTSAdapter()
             final_playback_service = playback_service or SoundDevicePlaybackService()
             final_sequence_controller = sequence_controller or SequenceController(
@@ -146,6 +151,7 @@ class NeuronDesktopApp:
                 capture_service=capture_service,
                 overlay_host=overlay_host,
                 capture_indicator=capture_indicator,
+                listening_indicator=final_listening_orb,
                 audio_service=audio_service,
                 stt_adapter=stt_adapter,
                 stt_bridge=self._stt_bridge,
@@ -180,6 +186,9 @@ class NeuronDesktopApp:
         self._sequence_bridge.tts_error.connect(
             self._session_controller.handle_tts_error
         )
+        self._sequence_bridge.narration_finished.connect(
+            self._session_controller.handle_sequence_finished
+        )
         self._audio_bridge.end_of_speech_detected.connect(
             self._session_controller.handle_end_of_speech
         )
@@ -204,11 +213,16 @@ class NeuronDesktopApp:
         self._session_controller.add_state_listener(self._on_session_state_changed)
 
     def _on_session_state_changed(self, state: Any) -> None:
-        """Coordinate wake detector microphone ownership and self-audio immunity based on state."""
+        """Coordinate wake detector microphone ownership and visual indicator based on state."""
         from app.session.state import SessionState
 
         if state == SessionState.IDLE:
             self._activation_manager.resume_wake_detection()
+            if hasattr(self._session_controller, "listening_indicator") and self._session_controller.listening_indicator:
+                self._session_controller.listening_indicator.hide()
+        elif state == SessionState.ERROR:
+            if hasattr(self._session_controller, "listening_indicator") and self._session_controller.listening_indicator:
+                self._session_controller.listening_indicator.hide()
         else:
             self._activation_manager.pause_wake_detection()
 
@@ -253,8 +267,19 @@ class NeuronDesktopApp:
     def shutdown(self) -> None:
         """Cleanly unregister global hotkeys, dismiss overlays, and release resources."""
         logger.info("Initiating application shutdown.")
+        if hasattr(self, "_tray_icon") and self._tray_icon is not None:
+            try:
+                self._tray_icon.hide()
+            except Exception:
+                pass
+
         if self._session_controller is not None:
             self._session_controller.dismiss()
+            if hasattr(self._session_controller, "listening_indicator") and self._session_controller.listening_indicator:
+                try:
+                    self._session_controller.listening_indicator.hide()
+                except Exception:
+                    pass
 
         if self._activation_manager is not None:
             self._activation_manager.stop()
@@ -262,10 +287,46 @@ class NeuronDesktopApp:
         if self._window is not None:
             self._window.close()
 
+    def _setup_system_tray(self, app: QApplication) -> None:
+        """Configure system tray icon for background assistant operation."""
+        from PySide6.QtWidgets import QMenu, QStyle, QSystemTrayIcon
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        tray = QSystemTrayIcon(self._window)
+        icon = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        tray.setIcon(icon)
+        tray.setToolTip("Neuron AI -- Ambient Multimodal Tutor")
+
+        menu = QMenu()
+        status_item = menu.addAction("Neuron AI: Active")
+        status_item.setEnabled(False)
+        menu.addSeparator()
+
+        def _toggle_window() -> None:
+            if self._window.isVisible():
+                self._window.hide()
+                toggle_action.setText("Show Developer Window")
+            else:
+                self._window.showNormal()
+                toggle_action.setText("Hide Developer Window")
+
+        toggle_action = menu.addAction("Show Developer Window")
+        toggle_action.triggered.connect(_toggle_window)
+
+        menu.addSeparator()
+        quit_action = menu.addAction("Exit Neuron AI")
+        quit_action.triggered.connect(app.quit)
+
+        tray.setContextMenu(menu)
+        tray.show()
+        self._tray_icon = tray
+
     def run(self) -> int:
         """Launch the desktop shell application and enter the event loop."""
         app = self.initialize_qapplication()
-        app.setQuitOnLastWindowClosed(True)
+        app.setQuitOnLastWindowClosed(False)  # Keep running in background when main window is hidden
         app.aboutToQuit.connect(self.shutdown)
 
         # Start global hotkey listener
@@ -275,7 +336,19 @@ class NeuronDesktopApp:
             session_controller=self._session_controller,
             activation_trigger=self._activation_manager,
         )
-        self._window.show()
+
+        self._setup_system_tray(app)
+
+        # Block 9 requirement: Main window remains minimized or hidden during normal use
+        show_window = (
+            "--show-window" in self._argv
+            or "--gui" in self._argv
+            or os.environ.get("NEURON_SHOW_WINDOW", "").strip().lower() in ("true", "1", "yes")
+        )
+        if show_window:
+            self._window.show()
+        else:
+            self._window.hide()
 
         try:
             return app.exec()

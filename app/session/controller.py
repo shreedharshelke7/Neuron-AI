@@ -18,6 +18,8 @@ from app.diagnostics.metrics import (
     MetricsCollector,
     get_metrics_collector,
 )
+import math
+from app.session.indicator import ListeningIndicator, StubListeningIndicator
 from app.capture.model import CapturedScreen, SelectedRegion
 from app.capture.service import CaptureService, StubCaptureService
 from app.overlay.host import OverlayHost, StubOverlayHost
@@ -63,6 +65,9 @@ class SessionController:
         desktop_window: Optional[Any] = None,
         capture_delay_ms: int = 80,
         metrics_collector: Optional[MetricsCollector] = None,
+        listening_indicator: Optional[ListeningIndicator] = None,
+        auto_cleanup: bool = True,
+        cleanup_delay_ms: int = 1500,
     ) -> None:
         self._state: SessionState = SessionState.IDLE
         self._auto_capture: bool = auto_capture
@@ -89,6 +94,11 @@ class SessionController:
         )
         self._session_start_time: Optional[float] = None
         self._listening_start_time: Optional[float] = None
+        self.listening_indicator: ListeningIndicator = (
+            listening_indicator if listening_indicator is not None else StubListeningIndicator()
+        )
+        self.auto_cleanup: bool = auto_cleanup
+        self.cleanup_delay_ms: int = max(0, int(cleanup_delay_ms))
 
         self.audio_service: Optional[AudioCaptureService] = audio_service
         self.stt_adapter: Optional[STTAdapter] = stt_adapter
@@ -131,8 +141,12 @@ class SessionController:
                 tts_adapter=self.tts_adapter,
                 playback_service=self.playback_service,
                 overlay_host=self.overlay_host,
+                on_finished=self.handle_sequence_finished,
                 on_error=self.handle_tts_error,
+                metrics_collector=self.metrics_collector,
             )
+        elif self.sequence_controller is not None and getattr(self.sequence_controller, 'on_finished', None) is None:
+            self.sequence_controller.on_finished = self.handle_sequence_finished
 
         # Connect overlay callbacks
         self.overlay_host.set_on_region_selected(self.on_region_selected)
@@ -249,9 +263,40 @@ class SessionController:
                 pass
 
     def _on_audio_frame(self, chunk: bytes) -> None:
-        """Receive raw audio frames during LISTENING and route to EndOfSpeechDetector."""
-        if self._state == SessionState.LISTENING and self.eos_detector is not None:
-            self.eos_detector.process_frame(chunk)
+        """Receive raw audio frames during LISTENING and route to EndOfSpeechDetector and ListeningIndicator."""
+        if self._state == SessionState.LISTENING:
+            if self.eos_detector is not None:
+                self.eos_detector.process_frame(chunk)
+            if self.listening_indicator is not None:
+                try:
+                    amp = self._calculate_amplitude(chunk)
+                    self.listening_indicator.set_amplitude(amp)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _calculate_amplitude(chunk: bytes) -> float:
+        """Calculate normalized [0.0, 1.0] RMS amplitude from 16-bit PCM chunk without saving audio."""
+        if not chunk or len(chunk) < 2:
+            return 0.0
+        try:
+            import audioop
+            rms = audioop.rms(chunk, 2)
+            return min(1.0, max(0.0, float(rms) / 3000.0))
+        except Exception:
+            pass
+        try:
+            import struct
+            count = len(chunk) // 2
+            if count == 0:
+                return 0.0
+            step = max(1, count // 64)
+            samples = struct.unpack(f"{count}h", chunk)
+            sum_sq = sum(samples[i] * samples[i] for i in range(0, count, step))
+            rms = math.sqrt(sum_sq / (count // step))
+            return min(1.0, max(0.0, float(rms) / 3000.0))
+        except Exception:
+            return 0.0
 
     def _dispatch_end_of_speech(self, token: int) -> None:
         """Dispatch end-of-speech event via Qt bridge or directly."""
@@ -327,6 +372,12 @@ class SessionController:
     def _set_state(self, new_state: SessionState) -> None:
         if self._state != new_state:
             self._state = new_state
+            if new_state in (SessionState.RESPONDED, SessionState.IDLE, SessionState.ERROR):
+                if self.listening_indicator is not None:
+                    try:
+                        self.listening_indicator.hide()
+                    except Exception:
+                        pass
             for listener in list(self._state_listeners):
                 try:
                     listener(self._state)
@@ -342,6 +393,9 @@ class SessionController:
             self._listening_start_time = time.perf_counter()
             self.audio_service.start_recording()
             self._set_state(SessionState.LISTENING)
+            if self.listening_indicator is not None:
+                geom = self._current_capture.geometry if self._current_capture else None
+                self.listening_indicator.show_listening(geometry=geom)
             if self.eos_detector is not None:
                 self.eos_detector.reset(token=self._session_token)
         except AudioError as err:
@@ -394,8 +448,14 @@ class SessionController:
         self._current_audio = result
 
         if self.stt_adapter is None:
+            if self.listening_indicator is not None:
+                self.listening_indicator.hide()
             self._set_state(SessionState.VOICE_CAPTURED)
             return result
+
+        if self.listening_indicator is not None:
+            geom = self._current_capture.geometry if self._current_capture else None
+            self.listening_indicator.show_thinking(geometry=geom)
 
         self._session_token += 1
         current_token = self._session_token
@@ -621,6 +681,49 @@ class SessionController:
                 )
             except Exception as ex:
                 logger.exception("Error starting narration sequence: %s", ex)
+        elif self.auto_cleanup:
+            self.schedule_delayed_cleanup(token, delay_ms=self.cleanup_delay_ms)
+
+    def handle_sequence_finished(self, token: int) -> None:
+        """Handle narration sequence completion and trigger automatic explanation cleanup."""
+        if token != self._session_token or self._state != SessionState.RESPONDED:
+            logger.debug(
+                "Dropping late or stale sequence finished event (token=%d, current_token=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
+
+        logger.info("Narration finished for session token %d. Auto cleanup=%s.", token, self.auto_cleanup)
+        if self.auto_cleanup:
+            self.schedule_delayed_cleanup(token, delay_ms=self.cleanup_delay_ms)
+
+    def schedule_delayed_cleanup(self, token: int, delay_ms: Optional[int] = None) -> None:
+        """Schedule automatic dismissal after visual hold delay."""
+        eff_delay = self.cleanup_delay_ms if delay_ms is None else max(0, delay_ms)
+        if eff_delay <= 0:
+            self._execute_cleanup(token)
+            return
+
+        if hasattr(self, "_cleanup_timer") and self._cleanup_timer is not None:
+            try:
+                self._cleanup_timer.cancel()
+            except Exception:
+                pass
+
+        timer = threading.Timer(eff_delay / 1000.0, lambda: self._execute_cleanup(token))
+        timer.daemon = True
+        self._cleanup_timer = timer
+        timer.start()
+
+    def _execute_cleanup(self, token: int) -> None:
+        """Execute automatic dismissal if session token matches and state is still RESPONDED."""
+        if token != self._session_token or self._state != SessionState.RESPONDED:
+            logger.debug("Aborting auto cleanup for obsolete token %d (current=%d, state=%s).", token, self._session_token, self._state)
+            return
+        logger.info("Executing automatic explanation cleanup for token %d.", token)
+        self.dismiss()
 
     def handle_tts_error(self, error_message: str, token: int) -> None:
         """Handle recoverable TTS failure during narration sequencing."""
@@ -736,6 +839,10 @@ class SessionController:
                 self.sequence_controller.cancel()
             except Exception as ex:
                 logger.warning("Error cancelling sequence controller before capture: %s", ex)
+
+        # Pre-capture exclusion: ensure listening orb is hidden so it does not contaminate screenshot
+        if self.listening_indicator is not None:
+            self.listening_indicator.hide()
 
         # Clear and hide any previous visual overlay before capturing so it does not contaminate screenshot
         if self.overlay_host is not None:
@@ -889,6 +996,16 @@ class SessionController:
             self._current_audio = None
             self._current_transcript = None
             self._current_tutor_response = None
+
+            if hasattr(self, "_cleanup_timer") and self._cleanup_timer is not None:
+                try:
+                    self._cleanup_timer.cancel()
+                except Exception:
+                    pass
+                self._cleanup_timer = None
+
+            if self.listening_indicator is not None:
+                self.listening_indicator.hide()
 
             if self.sequence_controller is not None:
                 try:
