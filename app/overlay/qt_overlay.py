@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import (
@@ -19,16 +19,19 @@ from PySide6.QtWidgets import QWidget
 
 from app.capture.model import DisplayGeometry, SelectedRegion
 from app.overlay.host import OverlayHost
+from app.overlay.renderer import OverlayRenderer
 
 logger = logging.getLogger(__name__)
 
 
 class RegionSelectionOverlay(QWidget):
-    """Transparent always-on-top overlay widget for manual region selection.
+    """Transparent always-on-top overlay widget for manual region selection and visual explanation.
 
     Allows the user to click-drag a rectangle in any direction. Releasing the
     mouse creates a SelectedRegion that remains visibly outlined.
-    Pressing Escape immediately dismisses the overlay.
+    When a TutorResponse is received, renders visual primitives (HIGHLIGHT, ARROW,
+    TEXT, CARD, EQUATION) directly above the source application.
+    Pressing Escape immediately dismisses the overlay and clears all visual explanation state.
     """
 
     MIN_SELECTION_SIZE: int = 8  # Minimum pixel width/height to avoid accidental clicks
@@ -40,6 +43,7 @@ class RegionSelectionOverlay(QWidget):
         self._current_pos: Optional[QPoint] = None
         self._is_dragging: bool = False
         self._final_region: Optional[SelectedRegion] = None
+        self._renderer: OverlayRenderer = OverlayRenderer()
 
         self._on_region_selected: Optional[Callable[[SelectedRegion], None]] = None
         self._on_dismissed: Optional[Callable[[], None]] = None
@@ -83,8 +87,41 @@ class RegionSelectionOverlay(QWidget):
         self.raise_()
         self.activateWindow()
 
+    @property
+    def renderer(self) -> OverlayRenderer:
+        """Active visual overlay renderer."""
+        return self._renderer
+
+    def render_tutor_response(
+        self,
+        response: Any,
+        geometry: Optional[DisplayGeometry] = None,
+        selected_region: Optional[SelectedRegion] = None,
+        relative_to_region: bool = False,
+    ) -> None:
+        """Render visual explanation primitives from a TutorResponse."""
+        geom = geometry or self._target_geometry
+        reg = selected_region or self._final_region
+        self._renderer.render_tutor_response(
+            response=response,
+            geometry=geom,
+            selected_region=reg,
+            relative_to_region=relative_to_region,
+        )
+        self.update()
+
+    def clear_explanation(self) -> None:
+        """Clear all active visual explanation primitives and repaint."""
+        self._renderer.clear()
+        self.update()
+
+    def has_explanation(self) -> bool:
+        """Return True if visual explanation primitives are currently rendered."""
+        return self._renderer.has_visuals()
+
     def dismiss(self) -> None:
-        """Hide overlay and clear active selection state."""
+        """Hide overlay, clear active selection state, and clear visual primitives."""
+        self._renderer.clear()
         if not self.isVisible():
             return
 
@@ -187,9 +224,26 @@ class RegionSelectionOverlay(QWidget):
             super().mouseReleaseEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        """Render the translucent overlay background and selection rectangle."""
+        """Render the translucent overlay background and selection rectangle, or visual primitives."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # If visual explanation primitives are active, draw them directly above the source application
+        if self._renderer.has_visuals():
+            self._renderer.paint(painter)
+
+            # If user selected a region, draw a subtle indicator outline
+            if self._final_region and self._target_geometry:
+                geom = self._target_geometry
+                lx = self._final_region.x - geom.x
+                ly = self._final_region.y - geom.y
+                subtle_rect = QRect(
+                    lx, ly, self._final_region.width, self._final_region.height
+                )
+                painter.setPen(QPen(QColor(66, 133, 244, 160), 1.5, Qt.PenStyle.DashLine))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(subtle_rect)
+            return
 
         # Translucent backdrop tint confirming overlay active state
         painter.fillRect(self.rect(), QColor(0, 0, 0, 35))
@@ -293,6 +347,10 @@ class QtOverlayHost(OverlayHost):
         """Dismiss overlay."""
         self._overlay.dismiss()
 
+    def hide(self) -> None:
+        """Programmatically hide overlay without triggering dismissal callback."""
+        self._overlay.hide()
+
     def is_visible(self) -> bool:
         """Return whether overlay is currently visible."""
         return self._overlay.isVisible()
@@ -306,6 +364,36 @@ class QtOverlayHost(OverlayHost):
         self, callback: Optional[Callable[[], None]]
     ) -> None:
         self._on_dismissed = callback
+
+    @property
+    def overlay(self) -> RegionSelectionOverlay:
+        """Underlying PySide6 overlay widget."""
+        return self._overlay
+
+    def render_tutor_response(
+        self,
+        response: Any,
+        geometry: Optional[DisplayGeometry] = None,
+        selected_region: Optional[SelectedRegion] = None,
+        relative_to_region: bool = False,
+    ) -> None:
+        """Render visual explanation primitives from a TutorResponse."""
+        if not self.is_visible():
+            self.show(geometry)
+        self._overlay.render_tutor_response(
+            response=response,
+            geometry=geometry,
+            selected_region=selected_region,
+            relative_to_region=relative_to_region,
+        )
+
+    def clear_explanation(self) -> None:
+        """Clear all active visual explanation primitives."""
+        self._overlay.clear_explanation()
+
+    def has_explanation(self) -> bool:
+        """Return True if visual explanation primitives are currently rendered."""
+        return self._overlay.has_explanation()
 
     def _handle_region_selected(self, region: SelectedRegion) -> None:
         if self._on_region_selected is not None:

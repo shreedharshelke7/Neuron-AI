@@ -391,6 +391,17 @@ class SessionController:
         self._current_tutor_response = result
         self._set_state(SessionState.RESPONDED)
 
+        # Render visual explanation on overlay surface
+        try:
+            geom = self._current_capture.geometry if self._current_capture else None
+            self.overlay_host.render_tutor_response(
+                response=result,
+                geometry=geom,
+                selected_region=self._selected_region,
+            )
+        except Exception as ex:
+            logger.exception("Error rendering tutor response on overlay: %s", ex)
+
     def handle_tutor_error(
         self, error_message: str, token: int
     ) -> None:
@@ -458,6 +469,17 @@ class SessionController:
 
         win = self._desktop_window
         has_win_to_hide = False
+
+        # Clear and hide any previous visual overlay before capturing so it does not contaminate screenshot
+        if self.overlay_host is not None:
+            try:
+                self.overlay_host.clear_explanation()
+                if self.overlay_host.is_visible():
+                    has_win_to_hide = True
+                    self.overlay_host.hide()
+            except Exception as ex:
+                logger.warning("Error clearing overlay before capture: %s", ex)
+
         if win is not None:
             self._window_was_visible = win.isVisible() if hasattr(win, "isVisible") else True
             self._window_was_maximized = win.isMaximized() if hasattr(win, "isMaximized") else False
@@ -579,8 +601,13 @@ class SessionController:
             self._current_transcript = None
             self._current_tutor_response = None
 
-            if self.overlay_host.is_visible():
-                self.overlay_host.dismiss()
+            if self.overlay_host is not None:
+                try:
+                    self.overlay_host.clear_explanation()
+                    if self.overlay_host.is_visible():
+                        self.overlay_host.dismiss()
+                except Exception as ex:
+                    logger.warning("Error clearing overlay host during dismiss: %s", ex)
             self.capture_indicator.hide()
             self._current_capture = None
             self._selected_region = None
