@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
+from app.audio.recorder import SoundDeviceAudioCaptureService
+from app.audio.service import AudioCaptureService
 from app.capture.qt_service import QtScreenCaptureService
 from app.desktop.indicator import CaptureIndicatorWidget
 from app.desktop.window import DesktopShellWindow
 from app.overlay.qt_overlay import QtOverlayHost
 from app.session.controller import SessionController
+from app.stt.adapter import STTAdapter
+from app.stt.whisper_stt import LocalWhisperSTTAdapter
 from app.trigger.manager import ActivationManager
 
 logger = logging.getLogger(__name__)
@@ -25,6 +29,21 @@ class HotkeySignalBridge(QObject):
     activated = Signal()
 
 
+class STTSignalBridge(QObject):
+    """Qt signal bridge ensuring worker thread transcription events execute on Qt GUI thread."""
+
+    result_ready = Signal(object, int)  # (TranscriptResult, token)
+    error_occurred = Signal(str, int)   # (error_message, token)
+
+    def emit_result(self, result: Any, token: int) -> None:
+        """Emit result_ready signal safely from worker thread."""
+        self.result_ready.emit(result, token)
+
+    def emit_error(self, error_message: str, token: int) -> None:
+        """Emit error_occurred signal safely from worker thread."""
+        self.error_occurred.emit(error_message, token)
+
+
 class NeuronDesktopApp:
     """Manages the lifecycle of the Neuron desktop shell application."""
 
@@ -32,6 +51,8 @@ class NeuronDesktopApp:
         self,
         session_controller: Optional[SessionController] = None,
         activation_manager: Optional[ActivationManager] = None,
+        audio_service: Optional[AudioCaptureService] = None,
+        stt_adapter: Optional[STTAdapter] = None,
         argv: Optional[List[str]] = None,
     ) -> None:
         self._argv = argv if argv is not None else sys.argv
@@ -41,8 +62,9 @@ class NeuronDesktopApp:
         # Ensure single QApplication exists prior to widget creation
         self.initialize_qapplication()
 
-        # Signal bridge for thread-safe cross-thread activation
+        # Signal bridges for thread-safe cross-thread execution
         self._bridge = HotkeySignalBridge()
+        self._stt_bridge = STTSignalBridge()
 
         # Instantiate concrete desktop services if not injected
         if session_controller is None:
@@ -53,12 +75,22 @@ class NeuronDesktopApp:
                 capture_service=capture_service,
                 overlay_host=overlay_host,
                 capture_indicator=capture_indicator,
+                audio_service=audio_service,
+                stt_adapter=stt_adapter,
+                stt_bridge=self._stt_bridge,
                 auto_capture=True,
             )
         else:
             self._session_controller = session_controller
+            self._session_controller.set_stt_bridge(self._stt_bridge)
 
         self._bridge.activated.connect(self._session_controller.request_activation)
+        self._stt_bridge.result_ready.connect(
+            self._session_controller.handle_transcription_success
+        )
+        self._stt_bridge.error_occurred.connect(
+            self._session_controller.handle_transcription_error
+        )
 
         self._activation_manager = activation_manager or ActivationManager(
             on_activate=self._bridge.activated.emit
@@ -74,6 +106,11 @@ class NeuronDesktopApp:
         """Access the activation manager."""
         return self._activation_manager
 
+    @property
+    def stt_bridge(self) -> STTSignalBridge:
+        """Access the STT signal bridge."""
+        return self._stt_bridge
+
     def initialize_qapplication(self) -> QApplication:
         """Create or return the single QApplication instance."""
         app = QApplication.instance()
@@ -84,11 +121,15 @@ class NeuronDesktopApp:
 
     def shutdown(self) -> None:
         """Cleanly unregister global hotkeys, dismiss overlays, and release resources."""
+        logger.info("Initiating application shutdown.")
         if self._session_controller is not None:
             self._session_controller.dismiss()
 
         if self._activation_manager is not None:
             self._activation_manager.stop()
+
+        if self._window is not None:
+            self._window.close()
 
     def run(self) -> int:
         """Launch the desktop shell application and enter the event loop."""
@@ -111,7 +152,25 @@ class NeuronDesktopApp:
             self.shutdown()
 
 
-def run_desktop_shell(argv: Optional[List[str]] = None) -> int:
+def run_desktop_shell(
+    argv: Optional[List[str]] = None,
+    audio_service: Optional[AudioCaptureService] = None,
+    stt_adapter: Optional[STTAdapter] = None,
+) -> int:
     """Convenience entry point function to launch the desktop shell."""
-    app = NeuronDesktopApp(argv=argv)
+    service = (
+        audio_service
+        if audio_service is not None
+        else SoundDeviceAudioCaptureService()
+    )
+    adapter = (
+        stt_adapter
+        if stt_adapter is not None
+        else LocalWhisperSTTAdapter()
+    )
+    app = NeuronDesktopApp(
+        audio_service=service,
+        stt_adapter=adapter,
+        argv=argv,
+    )
     return app.run()

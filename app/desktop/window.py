@@ -107,7 +107,25 @@ class DesktopShellWindow(QMainWindow):
         self.region_info_label.setVisible(False)
         layout.addWidget(self.region_info_label)
 
+        # Audio info display label (shown during LISTENING / VOICE_CAPTURED / TRANSCRIBING / TRANSCRIBED / ERROR)
+        self.audio_info_label = QLabel("", self)
+        audio_font = QFont()
+        audio_font.setPointSize(8)
+        self.audio_info_label.setFont(audio_font)
+        self.audio_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.audio_info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.audio_info_label.setWordWrap(True)
+        self.audio_info_label.setVisible(False)
+        layout.addWidget(self.audio_info_label)
+
         layout.addSpacing(6)
+
+        # Finish recording button (active during LISTENING)
+        self.finish_button = QPushButton("Finish Recording (Ctrl+Shift+Space)", self)
+        self.finish_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.finish_button.clicked.connect(self._on_finish_clicked)
+        self.finish_button.setEnabled(False)
+        layout.addWidget(self.finish_button)
 
         # Reset button
         self.reset_button = QPushButton("Reset to IDLE (Esc)", self)
@@ -147,12 +165,36 @@ class DesktopShellWindow(QMainWindow):
         """Handle reset button click."""
         self._controller.reset_to_idle()
 
+    def _on_finish_clicked(self) -> None:
+        """Handle finish recording button click."""
+        self._controller.stop_listening()
+
     def _update_state_style(self, state: SessionState) -> None:
         """Update label styling based on the active state."""
         if state in (SessionState.ACTIVATED, SessionState.CAPTURING):
             self.state_label.setStyleSheet(
                 "color: #ea8600; background-color: #fef7e0; "
                 "padding: 4px 12px; border-radius: 4px;"
+            )
+        elif state == SessionState.LISTENING:
+            self.state_label.setStyleSheet(
+                "color: #b06000; background-color: #fef7e0; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
+            )
+        elif state == SessionState.VOICE_CAPTURED:
+            self.state_label.setStyleSheet(
+                "color: #137333; background-color: #e6f4ea; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
+            )
+        elif state == SessionState.TRANSCRIBING:
+            self.state_label.setStyleSheet(
+                "color: #5b21b6; background-color: #f3e8ff; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
+            )
+        elif state == SessionState.TRANSCRIBED:
+            self.state_label.setStyleSheet(
+                "color: #065f46; background-color: #d1fae5; "
+                "padding: 4px 12px; border-radius: 4px; font-weight: bold;"
             )
         elif state in (SessionState.SELECTING, SessionState.SELECTED):
             self.state_label.setStyleSheet(
@@ -175,9 +217,53 @@ class DesktopShellWindow(QMainWindow):
         self.state_label.setText(f"State: {state.value}")
         self._update_state_style(state)
         self.reset_button.setEnabled(state != SessionState.IDLE)
-        if state == SessionState.IDLE:
+        self.finish_button.setEnabled(state == SessionState.LISTENING)
+
+        if state == SessionState.LISTENING:
+            self.audio_info_label.setText("Neuron is listening... Speak your question.")
+            self.audio_info_label.setStyleSheet(
+                "color: #b06000; background: #fef7e0; border-radius: 4px; padding: 6px;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.VOICE_CAPTURED:
+            res = self._controller.current_audio
+            if res is not None:
+                self.audio_info_label.setText(
+                    f"Voice captured: {res.duration_seconds:.2f}s "
+                    f"({res.sample_rate}Hz, {res.byte_count} bytes)"
+                )
+            else:
+                self.audio_info_label.setText("Voice captured")
+            self.audio_info_label.setStyleSheet(
+                "color: #137333; background: #e6f4ea; border-radius: 4px; padding: 6px;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.TRANSCRIBING:
+            self.audio_info_label.setText("Transcribing question...")
+            self.audio_info_label.setStyleSheet(
+                "color: #5b21b6; background: #f3e8ff; border-radius: 4px; padding: 6px; font-weight: 500;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.TRANSCRIBED:
+            res = self._controller.current_transcript
+            text = res.transcript if res is not None else ""
+            self.audio_info_label.setText(f"Transcript:\n{text}")
+            self.audio_info_label.setStyleSheet(
+                "color: #065f46; background: #d1fae5; border-radius: 4px; padding: 6px; font-weight: 500;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.ERROR:
+            err_msg = self._controller.last_error_message or "Operation failed"
+            self.audio_info_label.setText(f"Error: {err_msg}")
+            self.audio_info_label.setStyleSheet(
+                "color: #d93025; background: #fce8e6; border-radius: 4px; padding: 6px;"
+            )
+            self.audio_info_label.setVisible(True)
+        elif state == SessionState.IDLE:
             self.region_info_label.setVisible(False)
             self.region_info_label.setText("")
+            self.audio_info_label.setVisible(False)
+            self.audio_info_label.setText("")
 
     def _on_region_selected(self, region) -> None:
         """Display non-sensitive metadata for the selected region."""
@@ -193,6 +279,7 @@ class DesktopShellWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle clean window close."""
+        self._controller.dismiss()
         self._controller.remove_state_listener(self._on_state_changed)
         self._controller.remove_region_listener(self._on_region_selected)
         super().closeEvent(event)
