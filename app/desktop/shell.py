@@ -289,18 +289,29 @@ class NeuronDesktopApp:
 
     def _setup_system_tray(self, app: QApplication) -> None:
         """Configure system tray icon for background assistant operation."""
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QMenu, QStyle, QSystemTrayIcon
+
+        from app.utils.paths import get_app_icon_path
+        from app.version import PRODUCT_NAME, __version__
 
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
 
         tray = QSystemTrayIcon(self._window)
-        icon = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        icon_path = get_app_icon_path()
+        if icon_path:
+            icon = QIcon(icon_path)
+            if self._window is not None:
+                self._window.setWindowIcon(icon)
+        else:
+            icon = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+
         tray.setIcon(icon)
-        tray.setToolTip("Neuron AI -- Ambient Multimodal Tutor")
+        tray.setToolTip(f"{PRODUCT_NAME} v{__version__} -- Ambient Multimodal Tutor")
 
         menu = QMenu()
-        status_item = menu.addAction("Neuron AI: Active")
+        status_item = menu.addAction(f"{PRODUCT_NAME}: Active")
         status_item.setEnabled(False)
         menu.addSeparator()
 
@@ -316,7 +327,7 @@ class NeuronDesktopApp:
         toggle_action.triggered.connect(_toggle_window)
 
         menu.addSeparator()
-        quit_action = menu.addAction("Exit Neuron AI")
+        quit_action = menu.addAction(f"Exit {PRODUCT_NAME}")
         quit_action.triggered.connect(app.quit)
 
         tray.setContextMenu(menu)
@@ -328,6 +339,13 @@ class NeuronDesktopApp:
         app = self.initialize_qapplication()
         app.setQuitOnLastWindowClosed(False)  # Keep running in background when main window is hidden
         app.aboutToQuit.connect(self.shutdown)
+
+        # Release hardening: First-run setup check if required provider keys are missing
+        from app.desktop.setup_dialog import show_first_run_dialog_if_needed
+
+        if not show_first_run_dialog_if_needed():
+            logger.info("First-run setup cancelled or missing credentials. Exiting cleanly.")
+            return 0
 
         # Start global hotkey listener
         self._activation_manager.start()

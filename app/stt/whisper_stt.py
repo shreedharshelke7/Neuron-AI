@@ -38,14 +38,20 @@ class LocalWhisperSTTAdapter(STTAdapter):
 
     def __init__(
         self,
-        model_size_or_path: str = DEFAULT_MODEL,
+        model_size_or_path: Optional[str] = None,
         device: str = DEFAULT_DEVICE,
         compute_type: str = DEFAULT_COMPUTE_TYPE,
         language: str = DEFAULT_LANGUAGE,
         model_factory: Optional[Callable[[], Any]] = None,
     ) -> None:
         """Initialize adapter configuration without loading the model or opening network."""
-        self._model_size_or_path = model_size_or_path
+        from app.utils.paths import resolve_whisper_model_path
+
+        if model_size_or_path is None or model_size_or_path == self.DEFAULT_MODEL:
+            self._model_size_or_path = resolve_whisper_model_path(self.DEFAULT_MODEL)
+        else:
+            self._model_size_or_path = model_size_or_path
+
         self._device = device
         self._compute_type = compute_type
         self._language = language
@@ -77,6 +83,17 @@ class LocalWhisperSTTAdapter(STTAdapter):
             if self._model_factory is not None:
                 self._model = self._model_factory()
             else:
+                import os
+                from app.utils.paths import is_packaged
+
+                # In packaged execution, verify bundled model presence before initializing WhisperModel
+                if is_packaged():
+                    if not os.path.exists(self._model_size_or_path) or not os.path.isdir(self._model_size_or_path):
+                        raise STTUnavailableError(
+                            f"Bundled faster-whisper model directory not found at '{self._model_size_or_path}'. "
+                            "Please ensure the application bundle includes the 'models/faster-whisper-base.en' resource."
+                        )
+
                 from faster_whisper import WhisperModel
 
                 logger.info(
@@ -91,6 +108,8 @@ class LocalWhisperSTTAdapter(STTAdapter):
                     compute_type=self._compute_type,
                 )
             return self._model
+        except STTUnavailableError:
+            raise
         except Exception as exc:
             logger.exception("Failed to load local Whisper model: %s", exc)
             raise STTUnavailableError(

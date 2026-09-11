@@ -103,6 +103,28 @@ class NeuronSettings:
             return default
 
         gemini_key = get_val("GEMINI_API_KEY", None) or get_val("GOOGLE_API_KEY", None)
+        if not gemini_key:
+            try:
+                from app.config.credentials import get_gemini_api_key
+                gemini_key = get_gemini_api_key()
+            except Exception:
+                pass
+
+        eleven_key = get_val("ELEVENLABS_API_KEY", None)
+        if not eleven_key:
+            try:
+                from app.config.credentials import get_elevenlabs_api_key
+                eleven_key = get_elevenlabs_api_key()
+            except Exception:
+                pass
+
+        voice_id = get_val("ELEVENLABS_VOICE_ID", None)
+        if not voice_id:
+            try:
+                from app.config.user_config import get_user_voice_id
+                voice_id = get_user_voice_id()
+            except Exception:
+                pass
 
         wake_enabled_str = str(get_val("NEURON_WAKE_WORD_ENABLED", "true")).lower()
         wake_enabled = wake_enabled_str not in ("false", "0", "no", "off")
@@ -117,8 +139,8 @@ class NeuronSettings:
             stt_provider=get_val("STT_PROVIDER", "whisper"),
             whisper_model=get_val("WHISPER_MODEL", "base.en"),
             tts_provider=get_val("TTS_PROVIDER", "elevenlabs"),
-            elevenlabs_api_key=get_val("ELEVENLABS_API_KEY", None),
-            elevenlabs_voice_id=get_val("ELEVENLABS_VOICE_ID", None),
+            elevenlabs_api_key=eleven_key,
+            elevenlabs_voice_id=voice_id,
             elevenlabs_model_id=get_val("ELEVENLABS_MODEL_ID", "eleven_turbo_v2_5"),
             wake_word_enabled=wake_enabled,
             wake_word_phrase=get_val("NEURON_WAKE_WORD_PHRASE", "Hey Neuron"),
@@ -127,6 +149,12 @@ class NeuronSettings:
             metrics_enabled=metrics_enabled,
             log_level=get_val("LOG_LEVEL", "INFO"),
         )
+
+    def has_required_credentials(self) -> bool:
+        """Return True if required provider credentials (Gemini & ElevenLabs) are present."""
+        has_gemini = bool(self.gemini_api_key and self.gemini_api_key.strip())
+        has_eleven = bool(self.elevenlabs_api_key and self.elevenlabs_api_key.strip())
+        return has_gemini and has_eleven
 
     # Alias for convenience
     load = from_env
