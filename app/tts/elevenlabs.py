@@ -40,11 +40,11 @@ def _read_env_file_var(var_name: str) -> Optional[str]:
             with open(env_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith("#") or not line:
+                    if line.startswith("#") or not line or "=" not in line:
                         continue
-                    if line.startswith(f"{var_name}="):
-                        val = line.split("=", 1)[1].strip()
-                        cleaned = val.strip('"').strip("'")
+                    k, val = line.split("=", 1)
+                    if k.strip() == var_name:
+                        cleaned = val.strip().strip('"').strip("'")
                         if cleaned:
                             return cleaned
         except Exception:

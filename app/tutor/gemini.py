@@ -69,8 +69,11 @@ class GeminiTutorAdapter(TutorAdapter):
                 with open(env_path, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
-                        if line.startswith("GEMINI_MODEL="):
-                            candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if line.startswith("#") or not line or "=" not in line:
+                            continue
+                        k, val = line.split("=", 1)
+                        if k.strip() == "GEMINI_MODEL":
+                            candidate = val.strip().strip('"').strip("'")
                             if candidate:
                                 return candidate
             except Exception:
@@ -92,8 +95,11 @@ class GeminiTutorAdapter(TutorAdapter):
                     with open(env_path, "r", encoding="utf-8") as f:
                         for line in f:
                             line = line.strip()
-                            if line.startswith("GEMINI_API_KEY="):
-                                candidate = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            if line.startswith("#") or not line or "=" not in line:
+                                continue
+                            k, val = line.split("=", 1)
+                            if k.strip() == "GEMINI_API_KEY":
+                                candidate = val.strip().strip('"').strip("'")
                                 if candidate:
                                     key = candidate
                                     break

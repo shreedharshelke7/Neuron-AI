@@ -446,11 +446,6 @@ class SessionController:
             return
         logger.warning("TTS error occurred during narration: %s", error_message)
         self._last_error_message = error_message
-        if self._sequence_bridge and hasattr(self._sequence_bridge, "emit_error"):
-            try:
-                self._sequence_bridge.emit_error(error_message, token)
-            except Exception as ex:
-                logger.debug("Error emitting TTS error via bridge: %s", ex)
 
     def set_sequence_controller(self, sequence_controller: SequenceController) -> None:
         """Configure or swap the active sequence controller."""
