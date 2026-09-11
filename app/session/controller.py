@@ -9,6 +9,7 @@ from typing import Any, Callable, List, Optional
 from app.audio.errors import AudioError
 from app.audio.model import AudioCaptureResult
 from app.audio.service import AudioCaptureService
+from app.audio.vad import EndOfSpeechConfig, EndOfSpeechDetector
 from app.capture.indicator import CaptureIndicator, StubCaptureIndicator
 from app.capture.model import CapturedScreen, SelectedRegion
 from app.capture.service import CaptureService, StubCaptureService
@@ -49,6 +50,8 @@ class SessionController:
         playback_service: Optional[AudioPlaybackService] = None,
         sequence_controller: Optional[SequenceController] = None,
         sequence_bridge: Optional[Any] = None,
+        eos_detector: Optional[EndOfSpeechDetector] = None,
+        audio_bridge: Optional[Any] = None,
         auto_capture: bool = False,
         desktop_window: Optional[Any] = None,
         capture_delay_ms: int = 80,
@@ -82,6 +85,20 @@ class SessionController:
         self.tts_adapter: Optional[TTSAdapter] = tts_adapter
         self.playback_service: Optional[AudioPlaybackService] = playback_service
         self._sequence_bridge: Optional[Any] = sequence_bridge
+
+        self.eos_detector: Optional[EndOfSpeechDetector] = (
+            eos_detector if eos_detector is not None else EndOfSpeechDetector()
+        )
+        self._audio_bridge: Optional[Any] = audio_bridge
+        if self.eos_detector is not None:
+            self.eos_detector.set_on_end_of_speech(self._dispatch_end_of_speech)
+            self.eos_detector.set_on_timeout(self._dispatch_no_speech_timeout)
+
+        if self.audio_service is not None and hasattr(self.audio_service, "add_frame_listener"):
+            try:
+                self.audio_service.add_frame_listener(self._on_audio_frame)
+            except Exception:
+                pass
 
         self.capture_service: CaptureService = (
             capture_service or StubCaptureService()
@@ -191,6 +208,87 @@ class SessionController:
         """Set or update the bridge object used to marshal tutor worker events."""
         self._tutor_bridge = bridge
 
+    def set_audio_bridge(self, bridge: Any) -> None:
+        """Set or update the bridge object used to marshal audio events."""
+        self._audio_bridge = bridge
+
+    def set_eos_detector(self, detector: Optional[EndOfSpeechDetector]) -> None:
+        """Configure or swap the active end-of-speech detector."""
+        if self.eos_detector is not None:
+            self.eos_detector.stop()
+        self.eos_detector = detector
+        if self.eos_detector is not None:
+            self.eos_detector.set_on_end_of_speech(self._dispatch_end_of_speech)
+            self.eos_detector.set_on_timeout(self._dispatch_no_speech_timeout)
+
+    def set_audio_service(self, audio_service: Optional[AudioCaptureService]) -> None:
+        """Configure or swap the audio capture service and wire frame listeners."""
+        if self.audio_service is not None and hasattr(self.audio_service, "remove_frame_listener"):
+            try:
+                self.audio_service.remove_frame_listener(self._on_audio_frame)
+            except Exception:
+                pass
+        self.audio_service = audio_service
+        if self.audio_service is not None and hasattr(self.audio_service, "add_frame_listener"):
+            try:
+                self.audio_service.add_frame_listener(self._on_audio_frame)
+            except Exception:
+                pass
+
+    def _on_audio_frame(self, chunk: bytes) -> None:
+        """Receive raw audio frames during LISTENING and route to EndOfSpeechDetector."""
+        if self._state == SessionState.LISTENING and self.eos_detector is not None:
+            self.eos_detector.process_frame(chunk)
+
+    def _dispatch_end_of_speech(self, token: int) -> None:
+        """Dispatch end-of-speech event via Qt bridge or directly."""
+        bridge = self._audio_bridge
+        if bridge is not None and hasattr(bridge, "emit_end_of_speech"):
+            bridge.emit_end_of_speech(token)
+        elif bridge is not None and hasattr(bridge, "end_of_speech_detected"):
+            bridge.end_of_speech_detected.emit(token)
+        else:
+            self.handle_end_of_speech(token)
+
+    def _dispatch_no_speech_timeout(self, token: int) -> None:
+        """Dispatch no-speech timeout event via Qt bridge or directly."""
+        bridge = self._audio_bridge
+        if bridge is not None and hasattr(bridge, "emit_timeout"):
+            bridge.emit_timeout(token)
+        elif bridge is not None and hasattr(bridge, "no_speech_timeout"):
+            bridge.no_speech_timeout.emit(token)
+        else:
+            self.handle_no_speech_timeout(token)
+
+    def handle_end_of_speech(self, token: int) -> None:
+        """Handle automatic end-of-speech detection."""
+        if token != self._session_token or self._state != SessionState.LISTENING:
+            logger.debug(
+                "Dropping stale or late end-of-speech event (token=%d, current=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
+
+        logger.info("Automatic end-of-speech detected. Stopping microphone recording.")
+        self.stop_listening()
+
+    def handle_no_speech_timeout(self, token: int) -> None:
+        """Handle timeout when no speech was detected after activation."""
+        if token != self._session_token or self._state != SessionState.LISTENING:
+            logger.debug(
+                "Dropping stale or late no-speech timeout (token=%d, current=%d, state=%s).",
+                token,
+                self._session_token,
+                self._state,
+            )
+            return
+
+        logger.info("Listening timed out with no speech detected. Returning to IDLE.")
+        self._last_error_message = "No speech detected"
+        self.dismiss()
+
     def add_state_listener(self, listener: Callable[[SessionState], None]) -> None:
         """Register a callback invoked when the session state changes."""
         self._state_listeners.append(listener)
@@ -230,6 +328,8 @@ class SessionController:
         try:
             self.audio_service.start_recording()
             self._set_state(SessionState.LISTENING)
+            if self.eos_detector is not None:
+                self.eos_detector.reset(token=self._session_token)
         except AudioError as err:
             logger.warning("Microphone start failed: %s", err)
             self._last_error_message = str(err)
@@ -243,6 +343,9 @@ class SessionController:
 
     def stop_listening(self) -> Optional[AudioCaptureResult]:
         """Stop audio capture, store session audio, and transition to TRANSCRIBING or VOICE_CAPTURED."""
+        if self.eos_detector is not None:
+            self.eos_detector.stop()
+
         if self.audio_service is None or not self.audio_service.is_recording:
             return None
 
@@ -654,6 +757,9 @@ class SessionController:
         try:
             # Invalidate any in-flight transcription worker or pending capture
             self._session_token += 1
+
+            if self.eos_detector is not None:
+                self.eos_detector.stop()
 
             if self._capture_pending:
                 self._restore_desktop_window()

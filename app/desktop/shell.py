@@ -84,6 +84,19 @@ class SequenceSignalBridge(QObject):
         self.tts_error.emit(error_message, token)
 
 
+class AudioSignalBridge(QObject):
+    """Qt signal bridge ensuring worker audio events execute on Qt GUI thread."""
+
+    end_of_speech_detected = Signal(int)  # token
+    no_speech_timeout = Signal(int)       # token
+
+    def emit_end_of_speech(self, token: int) -> None:
+        self.end_of_speech_detected.emit(token)
+
+    def emit_timeout(self, token: int) -> None:
+        self.no_speech_timeout.emit(token)
+
+
 class NeuronDesktopApp:
     """Manages the lifecycle of the Neuron desktop shell application."""
 
@@ -112,6 +125,7 @@ class NeuronDesktopApp:
         self._stt_bridge = STTSignalBridge()
         self._tutor_bridge = TutorSignalBridge()
         self._sequence_bridge = SequenceSignalBridge()
+        self._audio_bridge = AudioSignalBridge()
 
         # Instantiate concrete desktop services if not injected
         if session_controller is None:
@@ -141,12 +155,14 @@ class NeuronDesktopApp:
                 playback_service=final_playback_service,
                 sequence_controller=final_sequence_controller,
                 sequence_bridge=self._sequence_bridge,
+                audio_bridge=self._audio_bridge,
                 auto_capture=True,
             )
         else:
             self._session_controller = session_controller
             self._session_controller.set_stt_bridge(self._stt_bridge)
             self._session_controller.set_tutor_bridge(self._tutor_bridge)
+            self._session_controller.set_audio_bridge(self._audio_bridge)
 
         self._bridge.activated.connect(self._session_controller.request_activation)
         self._stt_bridge.result_ready.connect(
@@ -163,6 +179,12 @@ class NeuronDesktopApp:
         )
         self._sequence_bridge.tts_error.connect(
             self._session_controller.handle_tts_error
+        )
+        self._audio_bridge.end_of_speech_detected.connect(
+            self._session_controller.handle_end_of_speech
+        )
+        self._audio_bridge.no_speech_timeout.connect(
+            self._session_controller.handle_no_speech_timeout
         )
 
         if activation_manager is None:
@@ -214,6 +236,11 @@ class NeuronDesktopApp:
     def sequence_bridge(self) -> SequenceSignalBridge:
         """Access the Sequence signal bridge."""
         return self._sequence_bridge
+
+    @property
+    def audio_bridge(self) -> AudioSignalBridge:
+        """Access the Audio signal bridge."""
+        return self._audio_bridge
 
     def initialize_qapplication(self) -> QApplication:
         """Create or return the single QApplication instance."""

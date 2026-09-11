@@ -57,6 +57,7 @@ class SoundDeviceAudioCaptureService(AudioCaptureService):
 
         self._lock = threading.Lock()
         self._frames: List[bytes] = []
+        self._frame_listeners: List[Callable[[bytes], None]] = []
         self._stream: Optional[Any] = None
         self._is_recording: bool = False
 
@@ -81,6 +82,18 @@ class SoundDeviceAudioCaptureService(AudioCaptureService):
     @property
     def encoding(self) -> str:
         return self._encoding
+
+    def add_frame_listener(self, listener: Callable[[bytes], None]) -> None:
+        """Register a callback to observe incoming raw PCM chunks."""
+        with self._lock:
+            if listener not in self._frame_listeners:
+                self._frame_listeners.append(listener)
+
+    def remove_frame_listener(self, listener: Callable[[bytes], None]) -> None:
+        """Unregister a frame listener callback."""
+        with self._lock:
+            if listener in self._frame_listeners:
+                self._frame_listeners.remove(listener)
 
     def start_recording(self) -> None:
         """Begin audio capture from the microphone into memory.
@@ -206,9 +219,18 @@ class SoundDeviceAudioCaptureService(AudioCaptureService):
         Performs no heavy work, no network, no STT, and no UI interaction.
         Copies incoming raw bytes into memory under the lock if recording.
         """
+        raw = bytes(indata)
         with self._lock:
-            if self._is_recording:
-                self._frames.append(bytes(indata))
+            if not self._is_recording:
+                return
+            self._frames.append(raw)
+            listeners = list(self._frame_listeners)
+
+        for listener in listeners:
+            try:
+                listener(raw)
+            except Exception as ex:
+                logger.debug("Error in audio frame listener: %s", ex)
 
     def _default_stream_factory(self, **kwargs: Any) -> Any:
         """Create a default sounddevice RawInputStream."""

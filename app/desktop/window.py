@@ -251,7 +251,9 @@ class DesktopShellWindow(QMainWindow):
             )
             self.audio_info_label.setVisible(True)
         elif state == SessionState.LISTENING:
-            self.audio_info_label.setText("Neuron is listening... Speak your question.")
+            self.audio_info_label.setText(
+                "Neuron is listening... Speak your question.\n(Stops automatically when you finish speaking)"
+            )
             self.audio_info_label.setStyleSheet(
                 "color: #b06000; background: #fef7e0; border-radius: 4px; padding: 6px;"
             )
