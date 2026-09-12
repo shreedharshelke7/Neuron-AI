@@ -80,18 +80,13 @@ def resolve_whisper_model_path(model_spec: str = "base.en") -> str:
     """Resolve the faster-whisper model path for bundled or source execution.
 
     Priority:
-    1. If the bundled model directory exists (e.g. models/faster-whisper-base.en),
-       return its absolute path.
-    2. If running packaged, return the expected bundled model path so STT adapter
-       can verify presence and raise a controlled error if missing.
-    3. If running from source, return model_spec (default: 'base.en') for standard
-       faster-whisper downloading or Hugging Face cache reuse.
+    1. If running in PyInstaller packaged mode, returns the bundled model path
+       (models/faster-whisper-base.en) so STT adapter can verify presence and
+       produce a controlled error if missing.
+    2. If running from source, returns model_spec (default: 'base.en') for standard
+       development execution and Hugging Face cache reuse.
     """
-    bundled_dir = get_resource_path(os.path.join("models", "faster-whisper-base.en"))
-    if os.path.exists(bundled_dir) and os.path.isdir(bundled_dir):
-        return bundled_dir
-
     if is_packaged():
-        return bundled_dir
+        return get_resource_path(os.path.join("models", "faster-whisper-base.en"))
 
     return model_spec
