@@ -9,11 +9,18 @@
 [![Pytest](https://img.shields.io/badge/Testing-Pytest-0A9EDC?style=for-the-badge\&logo=pytest\&logoColor=white)](https://pytest.org/)
 [![Platform](https://img.shields.io/badge/Platform-Desktop-555555?style=for-the-badge\&logo=windows\&logoColor=white)](https://github.com/Athxrvv18/Neuron)
 [![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=for-the-badge)](https://github.com/Athxrvv18/Neuron)
+[![Hackathon](https://img.shields.io/badge/Kurukshetra%202.0-Hackfest-8A2BE2?style=for-the-badge)](https://github.com/Athxrvv18/Neuron)
 
 [![GitHub Stars](https://img.shields.io/github/stars/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/issues)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/commits/main)
+[![Last Commit](https://img.shields.io/github/last-commit/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/commits/main)
+
+### 🌐 Live Demo
+
+**[🚀 Launch Neuron](https://neuron-lflnqdqlp-team-aurelin.vercel.app/)**
+
+[**GitHub Repository →**](https://github.com/Athxrvv18/Neuron)
 
 ---
 
@@ -181,6 +188,21 @@ Neuron/
 | ⚙️ **Event/Trigger System**  | Automation and workflow handling |
 | 🧪 **Pytest**                | Testing                          |
 | 🔐 **Environment Variables** | Secure configuration             |
+| ▲ **Vercel**                 | Live web deployment              |
+
+---
+
+## 🌐 Demo
+
+### Try Neuron Online
+
+🚀 **[Open the Live Demo](https://neuron-lflnqdqlp-team-aurelin.vercel.app/)**
+
+The deployed interface provides a quick way to explore the Neuron experience without setting up the project locally.
+
+### Source Code
+
+💻 **[View Neuron on GitHub](https://github.com/Athxrvv18/Neuron)**
 
 ---
 
@@ -420,5 +442,7 @@ It helps us understand that the project is useful and motivates us to keep build
 **Context-aware AI for the desktop.**
 
 *Think. Understand. Assist. Automate.*
+
+[🚀 Live Demo](https://neuron-lflnqdqlp-team-aurelin.vercel.app/) · [💻 GitHub](https://github.com/Athxrvv18/Neuron)
 
 </div>
