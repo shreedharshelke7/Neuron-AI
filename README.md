@@ -212,7 +212,7 @@ The deployed interface provides a quick way to explore the Neuron experience wit
 
 ```bash
 git clone https://github.com/shreedharshelke7/Neuron-AI.git
-cd Neuron
+cd Neuron-AI
 ```
 
 ### 2. Create a virtual environment
