@@ -7,20 +7,20 @@
 [![Python](https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge\&logo=python\&logoColor=white)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/PySide6-Qt-41CD52?style=for-the-badge\&logo=qt\&logoColor=white)](https://doc.qt.io/qtforpython/)
 [![Pytest](https://img.shields.io/badge/Testing-Pytest-0A9EDC?style=for-the-badge\&logo=pytest\&logoColor=white)](https://pytest.org/)
-[![Platform](https://img.shields.io/badge/Platform-Desktop-555555?style=for-the-badge\&logo=windows\&logoColor=white)](https://github.com/Athxrvv18/Neuron)
-[![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=for-the-badge)](https://github.com/Athxrvv18/Neuron)
-[![Hackathon](https://img.shields.io/badge/Kurukshetra%202.0-Hackfest-8A2BE2?style=for-the-badge)](https://github.com/Athxrvv18/Neuron)
+[![Platform](https://img.shields.io/badge/Platform-Desktop-555555?style=for-the-badge\&logo=windows\&logoColor=white)](https://github.com/shreedharshelke7/Neuron-AI)
+[![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=for-the-badge)](https://github.com/shreedharshelke7/Neuron-AI)
+[![Hackathon](https://img.shields.io/badge/Kurukshetra%202.0-Hackfest-8A2BE2?style=for-the-badge)](https://github.com/shreedharshelke7/Neuron-AI)
 
-[![GitHub Stars](https://img.shields.io/github/stars/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/network/members)
-[![GitHub Issues](https://img.shields.io/github/issues/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/issues)
-[![Last Commit](https://img.shields.io/github/last-commit/Athxrvv18/Neuron?style=flat-square\&logo=github)](https://github.com/Athxrvv18/Neuron/commits/main)
+[![GitHub Stars](https://img.shields.io/github/stars/shreedharshelke7/Neuron-AI?style=flat-square\&logo=github)](https://github.com/shreedharshelke7/Neuron-AI/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/shreedharshelke7/Neuron-AI?style=flat-square\&logo=github)](https://github.com/shreedharshelke7/Neuron-AI/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/shreedharshelke7/Neuron-AI?style=flat-square\&logo=github)](https://github.com/shreedharshelke7/Neuron-AI/issues)
+[![Last Commit](https://img.shields.io/github/last-commit/shreedharshelke7/Neuron-AI?style=flat-square\&logo=github)](https://github.com/shreedharshelke7/Neuron-AI/commits/main)
 
 ### 🌐 Live Demo
 
 **[🚀 Launch Neuron](https://neuron-lflnqdqlp-team-aurelin.vercel.app/)**
 
-[**GitHub Repository →**](https://github.com/Athxrvv18/Neuron)
+[**GitHub Repository →**](https://github.com/shreedharshelke7/Neuron-AI)
 
 ---
 
@@ -202,7 +202,7 @@ The deployed interface provides a quick way to explore the Neuron experience wit
 
 ### Source Code
 
-💻 **[View Neuron on GitHub](https://github.com/Athxrvv18/Neuron)**
+💻 **[View Neuron on GitHub](https://github.com/shreedharshelke7/Neuron-AI)**
 
 ---
 
@@ -211,7 +211,7 @@ The deployed interface provides a quick way to explore the Neuron experience wit
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Athxrvv18/Neuron.git
+git clone https://github.com/shreedharshelke7/Neuron-AI.git
 cd Neuron
 ```
 
@@ -443,6 +443,6 @@ It helps us understand that the project is useful and motivates us to keep build
 
 *Think. Understand. Assist. Automate.*
 
-[🚀 Live Demo](https://neuron-lflnqdqlp-team-aurelin.vercel.app/) · [💻 GitHub](https://github.com/Athxrvv18/Neuron)
+[🚀 Live Demo](https://neuron-lflnqdqlp-team-aurelin.vercel.app/) · [💻 GitHub](https://github.com/shreedharshelke7/Neuron-AI)
 
 </div>
